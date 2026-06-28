@@ -11,6 +11,8 @@ import { loadRegistry, saveRegistry } from './pharos/registry.js';
 import { runTurn } from './keeper.js';
 import { createStore, shouldRecall } from './memory/store.js';
 import { composeTurn } from './pharos/compose.js';
+import { hasCanary, stripCanary } from './pharos/canary.js';
+import { trackRecent, writeHandoff, buildReseed } from './pharos/handoff.js';
 
 const ACTIVE = new Set(KEEPERS.filter((k) => k.active).map((k) => k.id));
 const aliasOf = (id) => (KEEPERS.find((k) => k.id === id) || {}).alias || id;
@@ -50,8 +52,29 @@ export async function handle(prompt, opts = {}) {
   const compose = opts.compose || composeTurn;
   const turnPrompt = compose({ prompt, recalled, fresh: !reg.sessions[routed], switched: routed !== reg.current });
 
+  // Track this prompt against the Keeper's recent-list — the reseed source if the
+  // thread later degrades. Pointers, not warm context (stateless-secretary rule).
+  trackRecent(reg, routed, prompt);
+
   const switched = routed !== reg.current;
-  const turn = runTurn(routed, turnPrompt, { mock, reg });
+  const run = opts.runTurn || runTurn;
+  let turn = run(routed, turnPrompt, { mock, reg });
+
+  // The canary gate. Late-but-better-than-nothing (Josh): if the Keeper's answer
+  // lost its marker, the warm thread is degraded — write a handoff, flush the
+  // session, and REDO once on a fresh session reseeded with continuity. Skipped on
+  // the mock path (no real model to judge). Max 1 redo, then relay with a ⚠ flag.
+  let degraded = false;
+  let redone = false;
+  if (!mock && !hasCanary(turn.text)) {
+    writeHandoff(routed, reg, opts.handoff);
+    delete reg.sessions[routed]; // flush the degraded warm session
+    const reseed = buildReseed(routed, aliasOf(routed), reg);
+    const redoPrompt = reseed ? `${reseed}\n\n${turnPrompt}` : turnPrompt;
+    turn = run(routed, redoPrompt, { mock, reg }); // fresh session
+    redone = true;
+    degraded = !hasCanary(turn.text); // still no canary → honestly flag it
+  }
 
   reg.current = routed;
   if (persist) saveRegistry(reg);
@@ -65,6 +88,8 @@ export async function handle(prompt, opts = {}) {
     note,
     scores: decision.scores,
     recalled,
-    text: turn.text,
+    redone,
+    degraded,
+    text: stripCanary(turn.text),
   };
 }

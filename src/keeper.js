@@ -12,6 +12,7 @@
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { KEEPERS } from './pharos/keepers.js';
+import { CANARY_INSTRUCTION } from './pharos/canary.js';
 
 export function runTurn(keeperId, prompt, { mock = false, reg }) {
   const keeper = KEEPERS.find((k) => k.id === keeperId) || { id: keeperId, alias: keeperId, persona: '' };
@@ -32,7 +33,9 @@ export function runTurn(keeperId, prompt, { mock = false, reg }) {
   let sessionId;
   if (fresh) {
     sessionId = randomUUID();
-    args = ['-p', '--session-id', sessionId, '--append-system-prompt', keeper.persona, '--output-format', 'json', prompt];
+    // Persona + canary instruction set once at session creation; persists across
+    // --resume turns (the system prompt isn't re-sent on resume).
+    args = ['-p', '--session-id', sessionId, '--append-system-prompt', keeper.persona + CANARY_INSTRUCTION, '--output-format', 'json', prompt];
   } else {
     sessionId = existing.sessionId;
     args = ['-p', '--resume', sessionId, '--output-format', 'json', prompt];

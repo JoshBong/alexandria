@@ -27,7 +27,8 @@ rl.on('line', async (line) => {
   const r = await handle(p, { mock });
   const arrow = r.switched ? '↪' : '·';
   const recall = r.recalled?.length ? ` · recalled ${r.recalled.length}` : '';
-  console.log(`  ${arrow} ${r.routed} (${r.alias})  [${r.note}${r.fresh ? ' · new' : ''}${recall}]`);
+  const flush = r.redone ? (r.degraded ? ' · ⚠ degraded (redone)' : ' · reseeded') : '';
+  console.log(`  ${arrow} ${r.routed} (${r.alias})  [${r.note}${r.fresh ? ' · new' : ''}${recall}${flush}]`);
   console.log(r.text);
   console.log('');
   rl.prompt();
