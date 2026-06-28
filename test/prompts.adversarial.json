@@ -1,0 +1,18 @@
+[
+  { "prompt": "counter at 320", "intent": "horus", "mode": "sub-floor single keyword" },
+  { "prompt": "ship it", "intent": "ptah", "mode": "no vocabulary (deploy slang)" },
+  { "prompt": "does it pass now", "intent": "ptah", "mode": "no vocabulary (tests)" },
+  { "prompt": "is 320 too low to push back on", "intent": "horus", "mode": "no vocabulary (negotiation)" },
+  { "prompt": "they still haven't gotten back to me", "intent": "horus", "mode": "context-dependent" },
+  { "prompt": "the optimization isn't converging in my code", "intent": "ptah", "mode": "keyword collision (optimization->thoth)" },
+  { "prompt": "my flight got delayed so reschedule the interview", "intent": "ra/horus", "mode": "true cross-domain" },
+  { "prompt": "skip class to prep for the juniper onsite", "intent": "horus", "mode": "cross-domain (class vs juniper)" },
+  { "prompt": "build a study schedule for the curriculum", "intent": "thoth", "mode": "triple collision (build/schedule/study)" },
+  { "prompt": "fix that one", "intent": "(current)", "mode": "pronoun, needs thread context" },
+  { "prompt": "wrap the pset tonight", "intent": "thoth", "mode": "slang + keyword" },
+  { "prompt": "lock in the sri lanka dates", "intent": "ra", "mode": "slang + phrase" },
+  { "prompt": "can you take a look at the hysteresis thing", "intent": "ptah", "mode": "vague, keyword not in profile" },
+  { "prompt": "how'd the mock go", "intent": "horus", "mode": "no vocabulary (mock interview)" },
+  { "prompt": "remind me about the thing tomorrow", "intent": "ra", "mode": "vague but has keyword" },
+  { "prompt": "is this worth building or should I just drop it", "intent": "horus/anubis", "mode": "idea-eval, ambiguous" }
+]
