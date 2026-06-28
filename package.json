@@ -6,6 +6,7 @@
   "license": "MIT",
   "author": "Joshua Huang",
   "scripts": {
-    "router-proof": "node test/router-proof.js"
+    "router-proof": "node test/router-proof.js",
+    "route-log": "node test/route-log.js"
   }
 }

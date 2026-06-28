@@ -1,0 +1,44 @@
+fix the PreCompact hook so it writes the handoff before compaction
+refactor retrieval.cjs to seed the domain profiles from the ark index
+why is the devnexus MCP showing pending approval
+write the scoring function for the Pharos classifier
+the gitnexus index is stale, reindex the repo
+add a confidence margin to the classify output and debug the parser
+what's on my calendar this weekend
+book the flight to Sri Lanka before the ETA expires
+remind me to call my family in Taiwan
+did I journal about church last sunday
+schedule a taekwondo session friday morning
+plan the Malaysia leg of the summer trip
+help me start the discussion post for this week
+review my linear algebra pset before I submit it
+which Cornell courses should I take in the fall semester
+explain backprop for my deep learning notes
+do today's leetcode and log it in the curriculum
+summarize the lecture on optimization
+prep questions for the Juniper meeting
+score my resume the way a recruiter would
+draft a follow-up to the Planisphere intro
+what's a fair TC to counter the offer with
+update my LinkedIn headline for recruiting
+should I take the Mercor gig this week or focus on the curriculum
+tell me a joke
+I just thought of a totally new side project, not sure what bucket
+random question, how do octopuses actually think
+what's the meaning of the name Alexandria anyway
+counter at 320
+ship it
+does it pass now
+is 320 too low to push back on
+they still haven't gotten back to me
+the optimization isn't converging in my code
+my flight got delayed so reschedule the interview
+skip class to prep for the juniper onsite
+build a study schedule for the curriculum
+fix that one
+wrap the pset tonight
+lock in the sri lanka dates
+can you take a look at the hysteresis thing
+how'd the mock go
+remind me about the thing tomorrow
+is this worth building or should I just drop it
