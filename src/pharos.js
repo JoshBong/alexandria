@@ -13,6 +13,7 @@ import { createStore, shouldRecall } from './memory/store.js';
 import { composeTurn } from './pharos/compose.js';
 import { hasCanary, stripCanary } from './pharos/canary.js';
 import { trackRecent, writeHandoff, buildReseed } from './pharos/handoff.js';
+import { isTokenLow } from './pharos/tokens.js';
 
 const ACTIVE = new Set(KEEPERS.filter((k) => k.active).map((k) => k.id));
 const aliasOf = (id) => (KEEPERS.find((k) => k.id === id) || {}).alias || id;
@@ -50,7 +51,19 @@ export async function handle(prompt, opts = {}) {
   // opts.compose so an LLM-backed writer can replace the default local one. With no
   // recall, composeTurn returns the prompt unchanged (mock/warm-hit paths untouched).
   const compose = opts.compose || composeTurn;
-  const turnPrompt = compose({ prompt, recalled, fresh: !reg.sessions[routed], switched: routed !== reg.current });
+  const fresh = !reg.sessions[routed];
+  let turnPrompt = compose({ prompt, recalled, fresh, switched: routed !== reg.current });
+
+  // If this Keeper was proactively flushed last turn for capacity (the EARLY
+  // token-low gate below), its fresh session needs continuity. Prepend the reseed
+  // and clear the pending flag. (The canary path reseeds inline on its own redo;
+  // this handles the early path, where the flush happened on a PRIOR good turn.)
+  reg.reseedPending = reg.reseedPending || {};
+  if (fresh && reg.reseedPending[routed]) {
+    const reseed = buildReseed(routed, aliasOf(routed), reg);
+    if (reseed) turnPrompt = `${reseed}\n\n${turnPrompt}`;
+    delete reg.reseedPending[routed];
+  }
 
   // Track this prompt against the Keeper's recent-list — the reseed source if the
   // thread later degrades. Pointers, not warm context (stateless-secretary rule).
@@ -76,6 +89,20 @@ export async function handle(prompt, opts = {}) {
     degraded = !hasCanary(turn.text); // still no canary → honestly flag it
   }
 
+  // The EARLY (token-low) gate. The answer this turn was fine, but the Keeper's
+  // context load has crossed the limit — flush it now so the NEXT turn opens on a
+  // fresh, reseeded session, before the slow slide reaches the canary cliff. We do
+  // NOT redo this turn (capacity warning, not quality failure). Skipped when the
+  // canary path already flushed+redid (session is fresh again) and on mock turns
+  // (no usage → contextTokens 0 → never fires).
+  let compacting = false;
+  if (!redone && isTokenLow(turn.contextTokens || 0)) {
+    writeHandoff(routed, reg, opts.handoff);
+    delete reg.sessions[routed]; // flush the heavy warm session
+    reg.reseedPending[routed] = true; // next turn to this Keeper reseeds
+    compacting = true;
+  }
+
   reg.current = routed;
   if (persist) saveRegistry(reg);
 
@@ -90,6 +117,8 @@ export async function handle(prompt, opts = {}) {
     recalled,
     redone,
     degraded,
+    compacting,
+    contextTokens: turn.contextTokens || 0,
     text: stripCanary(turn.text),
   };
 }

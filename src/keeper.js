@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { KEEPERS } from './pharos/keepers.js';
 import { CANARY_INSTRUCTION } from './pharos/canary.js';
+import { contextTokensOf } from './pharos/tokens.js';
 
 export function runTurn(keeperId, prompt, { mock = false, reg }) {
   const keeper = KEEPERS.find((k) => k.id === keeperId) || { id: keeperId, alias: keeperId, persona: '' };
@@ -50,13 +51,17 @@ export function runTurn(keeperId, prompt, { mock = false, reg }) {
   }
 
   let text = (res.stdout || '').trim();
+  let usage;
   try {
     const parsed = JSON.parse(text);
     text = parsed.result ?? text;
+    usage = parsed.usage; // per-turn token accounting → the EARLY compaction signal
   } catch {
     /* non-JSON output — relay raw */
   }
 
   reg.sessions[keeperId] = { sessionId, started: true };
-  return { text, sessionId, fresh };
+  // contextTokens = the load carried into this turn (input + cache reads/creation).
+  // Pharos uses it as the EARLY (token-low) flush trigger; see pharos/tokens.js.
+  return { text, sessionId, fresh, usage, contextTokens: contextTokensOf(usage) };
 }

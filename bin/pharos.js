@@ -28,7 +28,8 @@ rl.on('line', async (line) => {
   const arrow = r.switched ? '↪' : '·';
   const recall = r.recalled?.length ? ` · recalled ${r.recalled.length}` : '';
   const flush = r.redone ? (r.degraded ? ' · ⚠ degraded (redone)' : ' · reseeded') : '';
-  console.log(`  ${arrow} ${r.routed} (${r.alias})  [${r.note}${r.fresh ? ' · new' : ''}${recall}${flush}]`);
+  const early = r.compacting ? ' · ⟳ pre-compacted (next turn reseeds)' : '';
+  console.log(`  ${arrow} ${r.routed} (${r.alias})  [${r.note}${r.fresh ? ' · new' : ''}${recall}${flush}${early}]`);
   console.log(r.text);
   console.log('');
   rl.prompt();
