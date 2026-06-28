@@ -1,0 +1,34 @@
+[
+  { "prompt": "fix the PreCompact hook so it writes the handoff before compaction", "expected": "ptah" },
+  { "prompt": "refactor retrieval.cjs to seed the domain profiles from the ark index", "expected": "ptah" },
+  { "prompt": "why is the devnexus MCP showing pending approval", "expected": "ptah" },
+  { "prompt": "write the scoring function for the Pharos classifier", "expected": "ptah" },
+  { "prompt": "the gitnexus index is stale, reindex the repo", "expected": "ptah" },
+  { "prompt": "add a confidence margin to the classify output and debug the parser", "expected": "ptah" },
+
+  { "prompt": "what's on my calendar this weekend", "expected": "ra" },
+  { "prompt": "book the flight to Sri Lanka before the ETA expires", "expected": "ra" },
+  { "prompt": "remind me to call my family in Taiwan", "expected": "ra" },
+  { "prompt": "did I journal about church last sunday", "expected": "ra" },
+  { "prompt": "schedule a taekwondo session friday morning", "expected": "ra" },
+  { "prompt": "plan the Malaysia leg of the summer trip", "expected": "ra" },
+
+  { "prompt": "help me start the discussion post for this week", "expected": "thoth" },
+  { "prompt": "review my linear algebra pset before I submit it", "expected": "thoth" },
+  { "prompt": "which Cornell courses should I take in the fall semester", "expected": "thoth" },
+  { "prompt": "explain backprop for my deep learning notes", "expected": "thoth" },
+  { "prompt": "do today's leetcode and log it in the curriculum", "expected": "thoth" },
+  { "prompt": "summarize the lecture on optimization", "expected": "thoth" },
+
+  { "prompt": "prep questions for the Juniper meeting", "expected": "horus" },
+  { "prompt": "score my resume the way a recruiter would", "expected": "horus" },
+  { "prompt": "draft a follow-up to the Planisphere intro", "expected": "horus" },
+  { "prompt": "what's a fair TC to counter the offer with", "expected": "horus" },
+  { "prompt": "update my LinkedIn headline for recruiting", "expected": "horus" },
+  { "prompt": "should I take the Mercor gig this week or focus on the curriculum", "expected": "horus" },
+
+  { "prompt": "tell me a joke", "expected": "anubis" },
+  { "prompt": "I just thought of a totally new side project, not sure what bucket", "expected": "anubis" },
+  { "prompt": "random question, how do octopuses actually think", "expected": "anubis" },
+  { "prompt": "what's the meaning of the name Alexandria anyway", "expected": "anubis" }
+]

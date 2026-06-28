@@ -1,0 +1,11 @@
+{
+  "name": "alexandria",
+  "version": "0.0.1",
+  "description": "Personal AI orchestration layer on Claude Code. Pharos routes prompts to warm per-domain Keepers over a memory substrate.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Joshua Huang",
+  "scripts": {
+    "router-proof": "node test/router-proof.js"
+  }
+}
