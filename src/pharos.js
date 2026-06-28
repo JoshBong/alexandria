@@ -14,13 +14,16 @@ import { composeTurn } from './pharos/compose.js';
 import { hasCanary, stripCanary } from './pharos/canary.js';
 import { trackRecent, writeHandoff, buildReseed } from './pharos/handoff.js';
 import { isTokenLow } from './pharos/tokens.js';
+import { logEvent, eventsEnabled } from './pharos/events.js';
 
 const ACTIVE = new Set(KEEPERS.filter((k) => k.active).map((k) => k.id));
 const aliasOf = (id) => (KEEPERS.find((k) => k.id === id) || {}).alias || id;
 
 export async function handle(prompt, opts = {}) {
   const { mock = false, persist = true } = opts;
-  const reg = opts.reg || loadRegistry();
+  // opts.registryPath isolates the head's pointer file (tests, or running more than
+  // one Alexandria instance) — defaults to the real .pharos/registry.json.
+  const reg = opts.reg || loadRegistry(opts.registryPath);
 
   const decision = classify(prompt, { currentKeeper: reg.current });
   let routed = decision.routed;
@@ -59,9 +62,13 @@ export async function handle(prompt, opts = {}) {
   // and clear the pending flag. (The canary path reseeds inline on its own redo;
   // this handles the early path, where the flush happened on a PRIOR good turn.)
   reg.reseedPending = reg.reseedPending || {};
+  let reseeded = false; // did this turn prepend a continuity reseed?
   if (fresh && reg.reseedPending[routed]) {
     const reseed = buildReseed(routed, aliasOf(routed), reg);
-    if (reseed) turnPrompt = `${reseed}\n\n${turnPrompt}`;
+    if (reseed) {
+      turnPrompt = `${reseed}\n\n${turnPrompt}`;
+      reseeded = true;
+    }
     delete reg.reseedPending[routed];
   }
 
@@ -84,6 +91,7 @@ export async function handle(prompt, opts = {}) {
     delete reg.sessions[routed]; // flush the degraded warm session
     const reseed = buildReseed(routed, aliasOf(routed), reg);
     const redoPrompt = reseed ? `${reseed}\n\n${turnPrompt}` : turnPrompt;
+    if (reseed) reseeded = true;
     turn = run(routed, redoPrompt, { mock, reg }); // fresh session
     redone = true;
     degraded = !hasCanary(turn.text); // still no canary → honestly flag it
@@ -104,7 +112,39 @@ export async function handle(prompt, opts = {}) {
   }
 
   reg.current = routed;
-  if (persist) saveRegistry(reg);
+  if (persist) saveRegistry(reg, opts.registryPath);
+
+  // The run log — one durable event per turn (token load, session lifecycle, which
+  // gates fired). Tied to `persist` so tests/sims (persist:false) stay silent;
+  // best-effort so a logging failure never affects the turn. See pharos/events.js.
+  if (persist && eventsEnabled()) {
+    const u = turn.usage || {};
+    logEvent(
+      {
+        prompt,
+        routed,
+        alias: aliasOf(routed),
+        reason: decision.reason,
+        switched,
+        freshSession: !!turn.fresh, // a new claude session was started this turn
+        sessionId: turn.sessionId || null,
+        mock,
+        contextTokens: turn.contextTokens || 0,
+        usage: {
+          input: u.input_tokens ?? null,
+          cacheRead: u.cache_read_input_tokens ?? null,
+          cacheCreation: u.cache_creation_input_tokens ?? null,
+          output: u.output_tokens ?? null,
+        },
+        recalled: recalled.length,
+        redone, // canary (LATE) gate fired a redo
+        degraded, // still no canary after the redo
+        compacting, // token (EARLY) gate flushed for next turn
+        reseeded, // this turn was reseeded for continuity
+      },
+      opts.events,
+    );
+  }
 
   return {
     routed,

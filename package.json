@@ -6,11 +6,13 @@
   "license": "MIT",
   "author": "Joshua Huang",
   "bin": {
-    "pharos": "bin/pharos.js"
+    "pharos": "bin/pharos.js",
+    "alexandria-events": "bin/events.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
     "pharos": "node bin/pharos.js",
+    "events": "node bin/events.js",
     "router-proof": "node test/router-proof.js",
     "route-log": "node test/route-log.js",
     "phase1-sim": "node test/phase1-sim.js"
