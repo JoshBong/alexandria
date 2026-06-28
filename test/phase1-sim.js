@@ -24,14 +24,14 @@ const convo = [
 console.log('\n  PHASE 1 SIM  (mock — no API)\n');
 console.log('  ' + '-'.repeat(74));
 
-convo.forEach(([prompt, expectation], i) => {
-  const r = handle(prompt, { mock: true, reg, persist: false });
+for (const [i, [prompt, expectation]] of convo.entries()) {
+  const r = await handle(prompt, { mock: true, reg, persist: false });
   const arrow = r.switched ? '↪' : '·';
   console.log(`  ${String(i + 1).padStart(2)}. "${prompt}"`);
   console.log(`      ${arrow} ${r.routed} (${r.alias})  ·  ${r.reason}${r.fresh ? ' · NEW' : ''}`);
   console.log(`      note: ${expectation}`);
   console.log('');
-});
+}
 
 console.log('  ' + '-'.repeat(74));
 console.log('  final registry:');

@@ -19,14 +19,15 @@ console.log('');
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: 'alexandria› ' });
 rl.prompt();
 
-rl.on('line', (line) => {
+rl.on('line', async (line) => {
   const p = line.trim();
   if (!p) return rl.prompt();
   if (p === '/exit' || p === '/quit') return rl.close();
 
-  const r = handle(p, { mock });
+  const r = await handle(p, { mock });
   const arrow = r.switched ? '↪' : '·';
-  console.log(`  ${arrow} ${r.routed} (${r.alias})  [${r.note}${r.fresh ? ' · new' : ''}]`);
+  const recall = r.recalled?.length ? ` · recalled ${r.recalled.length}` : '';
+  console.log(`  ${arrow} ${r.routed} (${r.alias})  [${r.note}${r.fresh ? ' · new' : ''}${recall}]`);
   console.log(r.text);
   console.log('');
   rl.prompt();
