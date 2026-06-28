@@ -10,20 +10,19 @@ import { dirname, join, resolve } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '../../');
-const dir = join(repoRoot, '.pharos');
-const file = join(dir, 'registry.json');
+const file = join(repoRoot, '.pharos', 'registry.json');
 
 const fresh = () => ({ current: null, sessions: {} });
 
-export function loadRegistry() {
+export function loadRegistry(target = file) {
   try {
-    return { ...fresh(), ...JSON.parse(readFileSync(file, 'utf8')) };
+    return { ...fresh(), ...JSON.parse(readFileSync(target, 'utf8')) };
   } catch {
     return fresh();
   }
 }
 
-export function saveRegistry(reg) {
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(file, JSON.stringify(reg, null, 2) + '\n');
+export function saveRegistry(reg, target = file) {
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, JSON.stringify(reg, null, 2) + '\n');
 }

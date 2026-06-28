@@ -9,6 +9,7 @@
     "pharos": "bin/pharos.js"
   },
   "scripts": {
+    "test": "node --test test/*.test.js",
     "pharos": "node bin/pharos.js",
     "router-proof": "node test/router-proof.js",
     "route-log": "node test/route-log.js",
