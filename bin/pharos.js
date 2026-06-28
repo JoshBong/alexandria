@@ -1,0 +1,38 @@
+#!/usr/bin/env node
+// Alexandria front door — one prompt, Pharos routes it to the right warm Keeper.
+//
+//   node bin/pharos.js            # live (uses the claude CLI / subscription)
+//   node bin/pharos.js --mock     # offline: routes + switches, no API calls
+//
+// Type a prompt and press enter. /exit to quit.
+
+import readline from 'node:readline';
+import { handle } from '../src/pharos.js';
+
+const mock = process.argv.includes('--mock');
+
+console.log('');
+console.log('  Alexandria — Pharos routes · Keepers hold · Alexandria remembers');
+console.log(`  ${mock ? 'MOCK mode (no API)' : 'live mode'} · Keepers: Ptah(code) Ra(personal) Anubis(intake) · /exit to quit`);
+console.log('');
+
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: 'alexandria› ' });
+rl.prompt();
+
+rl.on('line', (line) => {
+  const p = line.trim();
+  if (!p) return rl.prompt();
+  if (p === '/exit' || p === '/quit') return rl.close();
+
+  const r = handle(p, { mock });
+  const arrow = r.switched ? '↪' : '·';
+  console.log(`  ${arrow} ${r.routed} (${r.alias})  [${r.note}${r.fresh ? ' · new' : ''}]`);
+  console.log(r.text);
+  console.log('');
+  rl.prompt();
+});
+
+rl.on('close', () => {
+  console.log('— Alexandria out.');
+  process.exit(0);
+});

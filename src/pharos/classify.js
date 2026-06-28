@@ -59,8 +59,16 @@ export function classify(prompt, opts = {}) {
   let reason = 'argmax';
 
   if (topScore < floor) {
-    routed = 'anubis';
-    reason = 'below-floor->intake';
+    // Stickiness outranks the floor: a terse/vocab-free prompt mid-conversation
+    // ("ship it", "does it pass now") belongs to the Keeper you're already in.
+    // Only a cold start (no current Keeper) falls through to intake.
+    if (currentKeeper) {
+      routed = currentKeeper;
+      reason = 'sticky-below-floor';
+    } else {
+      routed = 'anubis';
+      reason = 'below-floor->intake';
+    }
   } else if (currentKeeper && routed !== currentKeeper) {
     const curScore = scores[currentKeeper] ?? 0;
     if (topScore - curScore < switchMargin) {

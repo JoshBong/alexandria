@@ -1,22 +1,30 @@
 // The Keeper registry — Alexandria's domains, named for Egyptian gods.
 //
-// Each Keeper maps a god (canonical `id`) to a plain-English domain (`alias`) and
-// a weighted keyword profile Pharos uses to route a prompt. Weights: 3 = strong,
-// 2 = medium, 1 = weak. Multi-word keys are matched as substrings (phrase, +1 bonus).
+// Each Keeper maps a god (canonical `id`) to a plain-English domain (`alias`), a
+// weighted keyword profile Pharos routes on (weights 3/2/1; multi-word keys are
+// phrase-matched as substrings, +1 bonus), an `active` flag (does a live Keeper
+// session exist yet?), and a `persona` (its standing system prompt — kept short
+// and stable so it caches).
 //
-// Anubis is the intake/lobby Keeper and has NO profile on purpose: Pharos routes
-// to it as the fallback when no other Keeper clears the confidence FLOOR — i.e. a
-// new/unrouted topic that hasn't earned its own Keeper yet (crystallize-on-earn).
+// Anubis is the intake/lobby Keeper: NO routing profile by design. Pharos lands
+// here as the cold-start fallback when nothing clears the FLOOR (a new/unrouted
+// topic that hasn't earned its own Keeper). Once you're mid-conversation in a
+// Keeper, stickiness keeps terse follow-ups in that Keeper instead (see classify).
 //
-// v0 profiles are hand-seeded and grounded in Josh's actual work. Phase 2 reseeds
-// these from the ark domain index and adds embeddings for the fuzzy cases. The
-// god-name is the canonical label; Pharos routes on the `alias` (the domain).
+// Phase 1 stands up Ptah, Ra, and Anubis. Thoth and Horus are defined for routing
+// but inactive until later phases (Pharos falls them back to intake for now).
 
 export const KEEPERS = [
   {
     id: 'ptah',
     alias: 'code',
+    active: true,
     note: 'craftsman-creator god — building, engineering, the repo',
+    persona:
+      'You are Ptah, Keeper of the code domain in Alexandria — Josh\'s engineering work ' +
+      '(the Alexandria orchestrator itself, the ark hooks, devnexus). Be precise, ' +
+      'terminal-first, and concise. This is a persistent warm thread: assume continuity ' +
+      'with earlier turns in this domain rather than re-asking for context.',
     terms: {
       code: 2, bug: 3, refactor: 3, function: 2, hook: 3, script: 2,
       classifier: 3, api: 2, endpoint: 3, deploy: 2, repo: 2, git: 2,
@@ -29,7 +37,12 @@ export const KEEPERS = [
   {
     id: 'ra',
     alias: 'personal',
+    active: true,
     note: 'the sun at the center — life, schedule, travel, family',
+    persona:
+      'You are Ra, Keeper of Josh\'s personal domain in Alexandria — schedule, travel, ' +
+      'family, church, and life logistics. Be concise and practical. This is a persistent ' +
+      'warm thread: assume continuity with earlier turns in this domain.',
     terms: {
       calendar: 3, schedule: 3, flight: 3, trip: 2, travel: 3, korea: 3,
       taiwan: 3, 'sri lanka': 3, malaysia: 3, dinner: 2, gym: 2,
@@ -41,6 +54,7 @@ export const KEEPERS = [
   {
     id: 'thoth',
     alias: 'classwork',
+    active: false,
     note: 'scribe of wisdom — study, courses, research, the curriculum',
     terms: {
       class: 3, homework: 3, pset: 3, assignment: 3, 'discussion post': 3,
@@ -53,6 +67,7 @@ export const KEEPERS = [
   {
     id: 'horus',
     alias: 'career',
+    active: false,
     note: 'the far-seeing Eye — offers, recruiting, the professional track',
     terms: {
       juniper: 3, planisphere: 3, offer: 3, recruiter: 3, resume: 3,
@@ -64,14 +79,20 @@ export const KEEPERS = [
   {
     id: 'anubis',
     alias: 'intake',
-    note: 'threshold guardian — catch-all for new/unrouted topics (no profile by design)',
+    active: true,
+    note: 'threshold guardian — catch-all for new/unrouted topics (no routing profile by design)',
+    persona:
+      'You are Anubis, the intake Keeper of Alexandria — you field new or unclassified ' +
+      'requests that have no dedicated Keeper yet. Be helpful and general. If a topic ' +
+      'clearly recurs, note that it may deserve its own Keeper.',
     terms: {},
   },
 ];
 
-// Below FLOOR, no Keeper is confident → route to Anubis (intake).
+// Below FLOOR, no Keeper is confident. Cold-start → Anubis (intake); but if you
+// are already in a Keeper, stickiness keeps you there (see classify).
 export const FLOOR = 3;
 
-// Hysteresis: when already in a Keeper, the top candidate must beat the current
-// Keeper by at least this much to trigger a switch. Prevents thrashing.
+// Hysteresis: a new candidate must beat the CURRENT Keeper by at least this much
+// to trigger a switch. Prevents thrashing on near-ties.
 export const SWITCH_MARGIN = 2;

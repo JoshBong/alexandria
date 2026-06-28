@@ -5,8 +5,13 @@
   "type": "module",
   "license": "MIT",
   "author": "Joshua Huang",
+  "bin": {
+    "pharos": "bin/pharos.js"
+  },
   "scripts": {
+    "pharos": "node bin/pharos.js",
     "router-proof": "node test/router-proof.js",
-    "route-log": "node test/route-log.js"
+    "route-log": "node test/route-log.js",
+    "phase1-sim": "node test/phase1-sim.js"
   }
 }
