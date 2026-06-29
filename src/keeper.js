@@ -29,6 +29,14 @@ export function runTurn(keeperId, prompt, { mock = false, reg }) {
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
   delete env.ANTHROPIC_AUTH_TOKEN;
+  // Mark this as a Keeper boat so Josh's private ark SessionStart hooks self-
+  // suppress inside it (auto-load/canary/etc. early-exit on ALEXANDRIA_BOAT).
+  // Without this the boat inherits the ark's `Ark:`/🐒 canary, which competes
+  // with our own ⟡ marker and fires false `degraded` redos (wasted live calls);
+  // it also inherits Josh's global handoff/identity injection — all off-topic to
+  // a domain Keeper. The guard lives in the ark hooks, so forkers (no ark hooks)
+  // are unaffected and Josh's direct sessions keep their canary.
+  env.ALEXANDRIA_BOAT = '1';
 
   let args;
   let sessionId;
