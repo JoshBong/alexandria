@@ -38,11 +38,7 @@ const C = {
 const W = () => Math.min(process.stdout.columns || 80, 96) - 2;
 const rule = (ch = '─') => ch.repeat(Math.max(8, W()));
 
-// The input prompt: a slim bronze rule above (the "line around where you type") and a
-// gold ankh marker — open by design, so nothing ever looks half-drawn or cut off. A
-// true fixed-bottom floating box would need a raw-mode TUI; this reads clean in plain
-// readline. Plain prompt when not a TTY.
-const PROMPT = TTY ? `\n  ${C.gold}⟡${C.reset} ${C.deep}›${C.reset} ` : 'alexandria› ';
+const PREFIX = `  ${C.gold}⟡${C.reset} ${C.deep}›${C.reset} `; // visible input marker
 
 // An animated "thinking" line (braille spinner + elapsed seconds), cleared in place
 // when the answer arrives. No-op on a non-TTY (keeps piped output clean).
@@ -211,6 +207,21 @@ function doReset() {
   console.log(`  ${C.dim}restart Alexandria (npm run alexandria) to set up from scratch.${C.reset}\n`);
 }
 
+const COMMANDS = [
+  ['/settings', 'view & toggle settings'],
+  ['/name', 'change what your Keepers call you'],
+  ['/metrics', 'toggle the per-turn token + timing line'],
+  ['/status', 'show each Keeper and whether it is warm'],
+  ['/reset', 'wipe all state for a clean first-run (testing)'],
+  ['/help', 'this list'],
+  ['/exit', 'quit'],
+];
+function printHelp() {
+  console.log(`  ${C.b}${C.gold}Commands${C.reset}`);
+  for (const [c, d] of COMMANDS) console.log(`    ${C.gold}${c.padEnd(10)}${C.reset} ${C.dim}${d}${C.reset}`);
+  console.log(`  ${C.dim}anything else is a question — Pharos routes it to the right Keeper.${C.reset}\n`);
+}
+
 function printStatus() {
   const reg = loadRegistry(registryPath);
   const cur = reg.current;
@@ -219,102 +230,146 @@ function printStatus() {
     const warm = !!(reg.sessions && reg.sessions[k.id]);
     const dot = warm ? `${C.green}●${C.reset}` : `${C.gray}○${C.reset}`;
     const here = cur === k.id ? `  ${C.gold}← here${C.reset}` : '';
-    console.log(`    ${dot} ${C.b}${k.id.padEnd(8)}${C.reset} ${C.dim}${k.alias.padEnd(10)}${warm ? 'warm' : 'cold'}${C.reset}${here}`);
+    console.log(`    ${dot} ${C.b}${k.id.padEnd(8)}${C.reset} ${C.dim}${k.alias.padEnd(13)}${warm ? 'warm' : 'cold'}${C.reset}${here}`);
   }
   console.log(`  ${C.dim}metrics ${showMetrics ? 'on' : 'off'}${cfg.mcpConfig ? ` · mcp ${cfg.mcpConfig}` : ''}${cfg.sharedTools ? ` · shared tools ${cfg.sharedTools}` : ''}${C.reset}`);
   console.log('');
 }
 
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: PROMPT });
+// ---- the input: a raw-mode line editor that draws a real box (top + bottom border)
+// AROUND the live input. readline can't keep a border below the cursor — it owns the
+// input line and any manual paint below staircases — so we own the keyboard here. The
+// box uses cursor save/restore (ESC 7/8), which is width-agnostic, so the ⟡ marker's
+// ambiguous width never throws off the cursor. Non-TTY falls back to a plain line
+// source (pipes / tests). ----
 
-// Input prompt: a `⟡ › ` marker. (A persistent bottom border WHILE typing isn't
-// possible in plain readline — readline owns the input line and fights any manual
-// paint below it, producing a staircase. A true fixed box needs a raw-mode TUI.)
-const reprompt = () => rl.prompt();
-reprompt();
+// Non-TTY line source: one readline, a queue, and an awaitable next().
+let pipedNext = null;
+if (!TTY) {
+  const rlp = readline.createInterface({ input: process.stdin });
+  const q = [];
+  let waiter = null;
+  let done = false;
+  rlp.on('line', (l) => { if (waiter) { const w = waiter; waiter = null; w(l); } else q.push(l); });
+  rlp.on('close', () => { done = true; if (waiter) { const w = waiter; waiter = null; w(null); } });
+  pipedNext = () => new Promise((res) => { if (q.length) res(q.shift()); else if (done) res(null); else { waiter = res; } });
+}
 
-// Serialize turns and track the in-flight one so a stdin close (EOF / piped input)
-// waits for it instead of dropping it. Pause input while a turn runs.
-let pending = Promise.resolve();
-let closed = false;
-rl.on('line', (line) => {
-  const p = line.trim();
-  if (!p) return reprompt();
-  if (TTY) console.log(`  ${C.bronze}${rule()}${C.reset}`); // the divider hugs the line you just typed
-  if (p === '/exit' || p === '/quit') return rl.close();
-  if (p === '/reset') {
-    doReset();
-    return reprompt();
-  }
-  if (p === '/metrics') {
-    showMetrics = !showMetrics;
-    console.log(`  ${C.dim}metrics ${showMetrics ? `${C.green}on` : 'off'}${C.reset}\n`);
-    return reprompt();
-  }
-  if (p === '/status') {
-    printStatus();
-    return reprompt();
-  }
-  if (p === '/help' || p === '/hlp' || p === '/?' || p === '/h') {
-    printHelp();
-    return reprompt();
-  }
+// Read one line. TTY → boxed raw-mode editor; non-TTY → next piped line (or null at EOF).
+function readLine({ prefix = PREFIX, box = true } = {}) {
+  if (!TTY) return pipedNext();
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    let buf = '';
+    let cur = 0;
+    let drawn = false;
+    readline.emitKeypressEvents(stdin);
+    if (stdin.setRawMode) stdin.setRawMode(true);
+    stdin.resume();
+
+    const bar = `  ${C.bronze}${rule()}${C.reset}`;
+    const render = () => {
+      if (box) {
+        if (drawn) process.stdout.write('\x1b[1A'); // from the (restored) input line up to the top rule
+        process.stdout.write(`\r\x1b[2K${bar}\n`); // top border
+        process.stdout.write(`\r\x1b[2K${prefix}${buf}`); // input line, cursor now at end of buf
+        if (cur < buf.length) process.stdout.write(`\x1b[${buf.length - cur}D`); // back to the edit point
+        process.stdout.write('\x1b7'); // SAVE the exact edit position (width-agnostic)
+        process.stdout.write(`\n\r\x1b[2K${bar}`); // bottom border (one line below)
+        process.stdout.write('\x1b8'); // RESTORE — back onto the input line
+      } else {
+        process.stdout.write(`\r\x1b[2K${prefix}${buf}`);
+        if (cur < buf.length) process.stdout.write(`\x1b[${buf.length - cur}D`);
+      }
+      drawn = true;
+    };
+    const finish = (val) => {
+      stdin.removeListener('keypress', onKey);
+      if (stdin.setRawMode) stdin.setRawMode(false);
+      if (box) process.stdout.write('\x1b[1B'); // down onto the bottom border so output flows under the box
+      process.stdout.write('\n');
+      resolve(val);
+    };
+    const onKey = (str, key) => {
+      key = key || {};
+      if (key.ctrl && key.name === 'c') return finish('/exit');
+      if (key.ctrl && key.name === 'd') return finish(buf.length ? buf : '/exit');
+      if (key.name === 'return' || key.name === 'enter') return finish(buf);
+      if (key.name === 'backspace') { if (cur > 0) { buf = buf.slice(0, cur - 1) + buf.slice(cur); cur -= 1; } return render(); }
+      if (key.name === 'left') { if (cur > 0) cur -= 1; return render(); }
+      if (key.name === 'right') { if (cur < buf.length) cur += 1; return render(); }
+      if (key.name === 'home') { cur = 0; return render(); }
+      if (key.name === 'end') { cur = buf.length; return render(); }
+      if (str && !key.ctrl && !key.meta && str >= ' ') { buf = buf.slice(0, cur) + str + buf.slice(cur); cur += str.length; return render(); } // printable (incl. paste)
+    };
+    stdin.on('keypress', onKey);
+    render();
+  });
+}
+
+// Never leave the terminal stuck in raw mode if we crash/exit unexpectedly.
+process.on('exit', () => { try { if (TTY && process.stdin.setRawMode) process.stdin.setRawMode(false); } catch { /* noop */ } });
+
+// Handle one submitted line. Returns false to quit the loop, true to keep going.
+async function handleLine(line) {
+  const p = (line || '').trim();
+  if (!p) return true;
+  if (p === '/exit' || p === '/quit') return false;
+  if (p === '/reset') { doReset(); return true; }
+  if (p === '/metrics') { showMetrics = !showMetrics; console.log(`  ${C.dim}metrics ${showMetrics ? `${C.green}on` : 'off'}${C.reset}\n`); return true; }
+  if (p === '/status') { printStatus(); return true; }
+  if (p === '/help' || p === '/hlp' || p === '/?' || p === '/h') { printHelp(); return true; }
   if (p === '/settings' || p.startsWith('/settings ')) {
     const args = p.split(/\s+/).slice(1);
-    if (args.length) changeSettings(args); // text form: /settings <key> [value]
+    if (args.length) changeSettings(args);
     else printSettings();
-    return reprompt();
+    return true;
   }
   if (p === '/name' || p.startsWith('/name ')) {
-    const apply = (nm) => {
-      if (nm) {
-        const saved = saveProfile({ name: nm });
-        profile.name = saved.name;
-        applyProfile({ profile: saved }); // rebuild personas in place
-        const reg = loadRegistry(registryPath); // flush warm sessions — persona is baked at creation
-        reg.sessions = {};
-        saveRegistry(reg, registryPath);
-        console.log(`  ${C.green}✓${C.reset} name set to ${C.b}${saved.name}${C.reset} ${C.dim}— Keepers updated; they re-warm on next use${C.reset}\n`);
-      } else {
-        console.log(`  ${C.dim}name unchanged${C.reset}\n`);
-      }
-      reprompt();
-    };
-    const arg = p.slice(5).trim();
-    if (arg) return apply(arg);
-    return rl.question(`  new name: `, (a) => apply(a.trim()));
+    let nm = p.slice(5).trim();
+    if (!nm) nm = (await readLine({ prefix: `  ${C.gold}new name${C.reset} ${C.deep}›${C.reset} `, box: false })).trim();
+    if (nm) {
+      const saved = saveProfile({ name: nm });
+      profile.name = saved.name;
+      applyProfile({ profile: saved }); // rebuild personas in place
+      const reg = loadRegistry(registryPath); // flush warm sessions — persona is baked at creation
+      reg.sessions = {};
+      saveRegistry(reg, registryPath);
+      console.log(`  ${C.green}✓${C.reset} name set to ${C.b}${saved.name}${C.reset} ${C.dim}— Keepers updated; they re-warm on next use${C.reset}\n`);
+    } else {
+      console.log(`  ${C.dim}name unchanged${C.reset}\n`);
+    }
+    return true;
   }
 
-  rl.pause();
-  pending = (async () => {
-    const t0 = Date.now();
-    const spin = thinking('routing');
-    const r = await handle(p, { mock, registryPath });
-    spin.stop();
-    const secs = ((Date.now() - t0) / 1000).toFixed(1);
-    const arrow = r.switched ? `${C.gold}↪${C.reset}` : `${C.gray}·${C.reset}`;
-    const recall = r.recalled?.length ? ` ${C.dim}· recalled ${r.recalled.length}${C.reset}` : '';
-    const flush = r.redone ? (r.degraded ? ` ${C.red}· ⚠ degraded${C.reset}` : ` ${C.green}· reseeded${C.reset}`) : '';
-    const early = r.compacting ? ` ${C.deep}· ⟳ pre-compacted${C.reset}` : '';
-    console.log(`  ${arrow} ${C.b}${r.routed}${C.reset} ${C.dim}(${r.alias})${C.reset} ${C.gray}${r.note}${r.fresh ? ' · new' : ''}${C.reset}${recall}${flush}${early}`);
-    if (showMetrics) printMetrics(r);
-    console.log('');
-    // Indent the answer body under a soft left gutter for readability.
-    console.log(r.text.split('\n').map((l) => `  ${l}`).join('\n'));
-    // The footer Josh likes: how long it took + how loaded the thread is now.
-    const ctx = r.contextTokens || 0;
-    const tok = ctx >= 1000 ? `${(ctx / 1000).toFixed(1)}k` : `${ctx}`;
-    console.log(`  ${C.gray}⧖ ${secs}s${ctx ? ` ${C.dim}·${C.gray} ◈ ${tok} tokens` : ''}${C.reset}`);
-    console.log('');
-    if (closed) return; // EOF arrived mid-turn — don't touch a closed interface
-    rl.resume();
-    reprompt();
-  })();
-});
+  // A question → route it to a Keeper.
+  const t0 = Date.now();
+  const spin = thinking('routing');
+  const r = await handle(p, { mock, registryPath });
+  spin.stop();
+  const secs = ((Date.now() - t0) / 1000).toFixed(1);
+  const arrow = r.switched ? `${C.gold}↪${C.reset}` : `${C.gray}·${C.reset}`;
+  const recall = r.recalled?.length ? ` ${C.dim}· recalled ${r.recalled.length}${C.reset}` : '';
+  const flush = r.redone ? (r.degraded ? ` ${C.red}· ⚠ degraded${C.reset}` : ` ${C.green}· reseeded${C.reset}`) : '';
+  const early = r.compacting ? ` ${C.deep}· ⟳ pre-compacted${C.reset}` : '';
+  console.log(`  ${arrow} ${C.b}${r.routed}${C.reset} ${C.dim}(${r.alias})${C.reset} ${C.gray}${r.note}${r.fresh ? ' · new' : ''}${C.reset}${recall}${flush}${early}`);
+  if (showMetrics) printMetrics(r);
+  console.log('');
+  console.log(r.text.split('\n').map((l) => `  ${l}`).join('\n')); // answer under a soft left gutter
+  const ctx = r.contextTokens || 0;
+  const tok = ctx >= 1000 ? `${(ctx / 1000).toFixed(1)}k` : `${ctx}`;
+  console.log(`  ${C.gray}⧖ ${secs}s${ctx ? ` ${C.dim}·${C.gray} ◈ ${tok} tokens` : ''}${C.reset}`); // timer + token load
+  console.log('');
+  return true;
+}
 
-rl.on('close', async () => {
-  closed = true;
-  await pending; // don't drop a turn that's still flushing/logging
-  console.log(`  ${C.dim}— Alexandria out.${C.reset}`);
-  process.exit(0);
-});
+// The loop: read a line, handle it, repeat. Turns are naturally serialized (we await
+// each before reading the next). Exits on /exit or EOF.
+let running = true;
+while (running) {
+  const line = await readLine();
+  if (line === null) break; // piped EOF
+  running = await handleLine(line);
+}
+console.log(`  ${C.dim}— Alexandria out.${C.reset}`);
+process.exit(0);
