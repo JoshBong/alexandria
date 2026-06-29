@@ -20,6 +20,18 @@
 //               a warm `--resume` (persona prefix already prompt-cached) instead of
 //               a cold fresh spawn. Default ON. Costs N cheap calls at startup,
 //               once; trades a few seconds of boot for a faster first switch.
+//   metrics   — show a detailed per-turn metrics line in the REPL (token load vs
+//               the window, compaction/degrade state, recall count, warm/cold).
+//               Default OFF; toggle live with `/metrics`.
+//
+// Two STRING settings carry the shared on-demand tool layer (every Keeper, loaded
+// lazily, never injected up front — see keeper.js):
+//   sharedTools — extra built-in tools appended to every Keeper's allowlist, e.g.
+//                 "WebSearch,WebFetch" so any Keeper can browse on demand. Each
+//                 deferred tool costs ~300 tokens only if/when actually loaded.
+//   mcpConfig   — path to a shared MCP server config (`--mcp-config`) handed to
+//                 every boat: connectors like a browser, Gmail, or calendar that all
+//                 Keepers can reach on demand. Default "" (none).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -29,6 +41,13 @@ export const DEFAULTS = {
   revoice: false,
   skipPerms: true,
   prewarm: true,
+  metrics: false,
+};
+
+// String-valued settings (not booleans) — resolved separately from the bool flags.
+export const STRING_DEFAULTS = {
+  sharedTools: '',
+  mcpConfig: '',
 };
 
 const ENV = {
@@ -36,6 +55,12 @@ const ENV = {
   revoice: 'ALEXANDRIA_REVOICE',
   skipPerms: 'ALEXANDRIA_SKIP_PERMS',
   prewarm: 'ALEXANDRIA_PREWARM',
+  metrics: 'ALEXANDRIA_METRICS',
+};
+
+const STRING_ENV = {
+  sharedTools: 'ALEXANDRIA_SHARED_TOOLS',
+  mcpConfig: 'ALEXANDRIA_MCP_CONFIG',
 };
 
 function envBool(name) {
@@ -48,12 +73,14 @@ function envBool(name) {
 }
 
 export function getSettings({ settingsPath } = {}) {
-  const out = { ...DEFAULTS };
+  const out = { ...DEFAULTS, ...STRING_DEFAULTS };
 
   const p = settingsPath || path.join(process.cwd(), '.pharos', 'settings.json');
+  let file = {};
   try {
-    const f = JSON.parse(fs.readFileSync(p, 'utf8'));
-    for (const k of Object.keys(DEFAULTS)) if (k in f) out[k] = !!f[k];
+    file = JSON.parse(fs.readFileSync(p, 'utf8')) || {};
+    for (const k of Object.keys(DEFAULTS)) if (k in file) out[k] = !!file[k];
+    for (const k of Object.keys(STRING_DEFAULTS)) if (typeof file[k] === 'string') out[k] = file[k];
   } catch {
     /* no file / unreadable → defaults */
   }
@@ -61,6 +88,10 @@ export function getSettings({ settingsPath } = {}) {
   for (const k of Object.keys(DEFAULTS)) {
     const e = envBool(ENV[k]);
     if (e !== undefined) out[k] = e;
+  }
+  for (const k of Object.keys(STRING_DEFAULTS)) {
+    const e = process.env[STRING_ENV[k]];
+    if (typeof e === 'string') out[k] = e;
   }
 
   return out;

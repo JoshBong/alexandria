@@ -29,7 +29,7 @@ test('vocab-less follow-up sticks to the current Keeper', async () => {
 
 test('Horus is now active — career prompts route to horus, not intake', async () => {
   const reg = freshReg();
-  const r = await handle('prep questions for the juniper meeting', { mock: true, reg, persist: false, store: emptyStore });
+  const r = await handle('help me negotiate my offer', { mock: true, reg, persist: false, store: emptyStore });
   assert.equal(r.routed, 'horus');
 });
 

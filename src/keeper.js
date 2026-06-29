@@ -11,10 +11,48 @@
 
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { KEEPERS } from './pharos/keepers.js';
 import { CANARY_INSTRUCTION } from './pharos/canary.js';
 import { contextTokensOf } from './pharos/tokens.js';
 import { getSettings } from './pharos/settings.js';
+
+// Where a boat runs. A `clean` (reasoner) Keeper spawns from a neutral, empty dir so
+// it doesn't inhabit the code repo — otherwise the base Claude Code identity + the
+// repo cwd make a personal/career Keeper introduce itself as "a coding agent in your
+// repo." Ptah (code) keeps the repo cwd (undefined → inherit). The neutral dir is
+// gitignored (under .pharos) and created on demand.
+export function boatCwd(keeper) {
+  if (!keeper.clean) return undefined;
+  const dir = join(process.cwd(), '.pharos', 'cwd');
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    /* best-effort */
+  }
+  return dir;
+}
+
+// The per-boat spawn flags shared by EVERY `claude` invocation for a Keeper, so a
+// prewarm spawn and a live turn open identical sessions (no context drift):
+//   --tools <list>            keeper's built-ins + shared on-demand tools (lean by
+//                             default; '' disables all built-ins)
+//   --setting-sources local   for `clean` Keepers — skip project/user CLAUDE.md
+//                             auto-discovery (a personal/career Keeper shouldn't
+//                             inherit the repo's dev-tooling context)
+//   --dangerously-skip-permissions   headless boats can't answer a permission prompt
+//   --mcp-config <path>       shared connector config (browser/Gmail/calendar), if set
+// MCP connectors stay DEFERRED — available on demand, never injected up front.
+export function boatExtraArgs(keeper, cfg) {
+  const extra = [];
+  const toolParts = [keeper.tools, cfg.sharedTools].filter((s) => typeof s === 'string' && s.length);
+  if (typeof keeper.tools === 'string') extra.push('--tools', toolParts.join(','));
+  if (keeper.clean) extra.push('--setting-sources', 'local');
+  if (cfg.skipPerms) extra.push('--dangerously-skip-permissions');
+  if (cfg.mcpConfig) extra.push('--mcp-config', cfg.mcpConfig);
+  return extra;
+}
 
 export function runTurn(keeperId, prompt, { mock = false, reg, settings } = {}) {
   const keeper = KEEPERS.find((k) => k.id === keeperId) || { id: keeperId, alias: keeperId, persona: '' };
@@ -39,15 +77,11 @@ export function runTurn(keeperId, prompt, { mock = false, reg, settings } = {}) 
   // are unaffected and Josh's direct sessions keep their canary.
   env.ALEXANDRIA_BOAT = '1';
 
-  // Per-Keeper toolbox + headless permission bypass, sized to the domain. A reasoner
-  // Keeper carries `--tools ''` (no built-in tool schemas → boat baseline ~5k, not
-  // ~26k); only an acting Keeper (Ptah) carries a real set. skipPerms bypasses the
-  // permission prompt a headless boat can't answer. Applied to fresh AND resume
-  // spawns (tools are per-process, not stored in the session).
+  // Per-Keeper spawn flags (tools / clean context / perms / shared connectors),
+  // sized to the domain and applied to fresh AND resume spawns (these are
+  // per-process, not stored in the session). See boatExtraArgs.
   const cfg = settings || getSettings();
-  const extra = [];
-  if (typeof keeper.tools === 'string') extra.push('--tools', keeper.tools);
-  if (cfg.skipPerms) extra.push('--dangerously-skip-permissions');
+  const extra = boatExtraArgs(keeper, cfg);
 
   let args;
   let sessionId;
@@ -61,7 +95,7 @@ export function runTurn(keeperId, prompt, { mock = false, reg, settings } = {}) 
     args = ['-p', '--resume', sessionId, ...extra, '--output-format', 'json', prompt];
   }
 
-  const res = spawnSync('claude', args, { env, encoding: 'utf8', maxBuffer: 1e8 });
+  const res = spawnSync('claude', args, { env, encoding: 'utf8', maxBuffer: 1e8, cwd: boatCwd(keeper) });
   if (res.error) {
     return { text: `    [${keeperId}] ⚠ failed to launch claude: ${res.error.message}`, sessionId, fresh, error: true };
   }

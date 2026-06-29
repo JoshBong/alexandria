@@ -18,11 +18,13 @@ import { KEEPERS } from './keepers.js';
 import { CANARY_INSTRUCTION } from './canary.js';
 import { getSettings } from './settings.js';
 import { loadRegistry, saveRegistry } from './registry.js';
+import { boatExtraArgs, boatCwd } from '../keeper.js';
 
 const WARM_PROMPT = 'Session warmup — you are now resident. Reply with exactly: ⟡ ready';
 
 // Spawn one fresh establishing turn; resolve to the new sessionId on success, null
 // on any failure. Async (node:child_process spawn) so all Keepers warm concurrently.
+// Uses the SAME boatExtraArgs as a live turn so the warmed session matches exactly.
 function spawnFresh(keeper, prompt, { settings }) {
   return new Promise((resolve) => {
     const env = { ...process.env };
@@ -30,11 +32,9 @@ function spawnFresh(keeper, prompt, { settings }) {
     delete env.ANTHROPIC_AUTH_TOKEN;
     env.ALEXANDRIA_BOAT = '1';
     const sessionId = randomUUID();
-    const extra = [];
-    if (typeof keeper.tools === 'string') extra.push('--tools', keeper.tools);
-    if (settings.skipPerms) extra.push('--dangerously-skip-permissions');
+    const extra = boatExtraArgs(keeper, settings);
     const args = ['-p', '--session-id', sessionId, '--append-system-prompt', keeper.persona + CANARY_INSTRUCTION, ...extra, '--output-format', 'json', prompt];
-    const child = spawn('claude', args, { env, stdio: 'ignore' });
+    const child = spawn('claude', args, { env, stdio: 'ignore', cwd: boatCwd(keeper) });
     let settled = false;
     const finish = (ok) => { if (settled) return; settled = true; resolve(ok ? sessionId : null); };
     child.on('error', () => finish(false));
