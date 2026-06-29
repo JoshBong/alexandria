@@ -250,7 +250,7 @@ rl.on('line', (line) => {
     // The footer Josh likes: how long it took + how loaded the thread is now.
     const ctx = r.contextTokens || 0;
     const tok = ctx >= 1000 ? `${(ctx / 1000).toFixed(1)}k` : `${ctx}`;
-    console.log(`  ${C.gray}⧗ ${secs}s${ctx ? ` ${C.dim}·${C.gray} ◈ ${tok} tokens` : ''}${C.reset}`);
+    console.log(`  ${C.gray}⧖ ${secs}s${ctx ? ` ${C.dim}·${C.gray} ◈ ${tok} tokens` : ''}${C.reset}`);
     console.log('');
     if (closed) return; // EOF arrived mid-turn — don't touch a closed interface
     rl.resume();
