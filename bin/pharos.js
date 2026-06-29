@@ -84,19 +84,41 @@ console.log('');
 // Warm every Keeper up front (parallel) so the first switch to a domain resumes a
 // hot, prompt-cached thread instead of cold-spawning one. Off in mock / --no-prewarm
 // / when the setting is disabled. Best-effort.
+//
+// The boot animation: light the Pharos. Each Keeper is a lamp that flickers (braille
+// spinner) until its session is established, then locks to a steady ●. They warm in
+// parallel and finish at slightly different times, so the row lights up organically —
+// which is exactly what hides the few seconds of spin-up.
 if (!mock && !noPrewarm && cfg.prewarm) {
-  const spin = thinking('warming Keepers');
-  if (!TTY) process.stdout.write('  warming Keepers…');
-  const { results } = await prewarmAll({ settings: cfg });
-  spin.stop();
-  const ok = results.filter((r) => r.ok).map((r) => r.alias);
-  const failed = results.filter((r) => !r.ok).map((r) => r.alias);
-  console.log(
-    results.length
-      ? `  ${C.green}✓${C.reset} ${ok.length} warm ${C.dim}(${ok.join(', ')})${C.reset}${failed.length ? `  ${C.yellow}· ${failed.length} cold (${failed.join(', ')})${C.reset}` : ''}`
-      : `  ${C.dim}all Keepers already warm${C.reset}`,
-  );
-  console.log('');
+  const active = KEEPERS.filter((k) => k.active);
+  const reg0 = loadRegistry();
+  const lit = Object.fromEntries(active.map((k) => [k.id, !!(reg0.sessions && reg0.sessions[k.id])]));
+  const flames = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
+  const label = (k) => k.id[0].toUpperCase() + k.id.slice(1);
+
+  if (TTY) {
+    let frame = 0;
+    const render = () => {
+      const cells = active.map((k) =>
+        lit[k.id]
+          ? `${C.yellow}◆${C.reset} ${C.b}${label(k)}${C.reset}`
+          : `${C.gray}${flames[frame % flames.length]}${C.reset} ${C.dim}${label(k)}${C.reset}`,
+      ).join('   ');
+      process.stdout.write(`\r  ${C.dim}lighting the Pharos${C.reset}  ${cells}\x1b[K`);
+    };
+    process.stdout.write(`\n  ${C.cyan}${C.b}🗼 Alexandria${C.reset}\n\n`);
+    const timer = setInterval(() => { frame++; render(); }, 80);
+    render();
+    await prewarmAll({ settings: cfg, onResult: (k, ok) => { lit[k.id] = ok || lit[k.id]; render(); } });
+    clearInterval(timer);
+    render();
+    process.stdout.write('\n\n');
+  } else {
+    process.stdout.write('  warming Keepers…');
+    const { results } = await prewarmAll({ settings: cfg });
+    const ok = results.filter((r) => r.ok).length;
+    console.log(` ${ok} warm\n`);
+  }
 }
 
 // The per-turn metrics line — token load against the window, lifecycle flags, recall.
