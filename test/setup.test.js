@@ -42,8 +42,11 @@ test('profile: ALEXANDRIA_NAME env overrides the file', () => {
 });
 
 // ---- shipped registry is identity-free ----
+// Assert the GENERIC ship (neutral profile, no overrides) — not the live KEEPERS,
+// which legitimately interpolate the local operator's own gitignored name.
 test('keepers: shipped registry carries no personal proper nouns', () => {
-  const blob = JSON.stringify(KEEPERS).toLowerCase();
+  const ship = buildKeepers({ profile: { name: 'the operator' }, overrides: {} });
+  const blob = JSON.stringify(ship).toLowerCase();
   for (const word of ['josh', 'juniper', 'planisphere', 'mercor', 'nyu', 'cornell', 'sri lanka', 'taekwondo', 'faye']) {
     assert.equal(blob.includes(word), false, `shipped Keepers leak "${word}"`);
   }

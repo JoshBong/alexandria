@@ -12,7 +12,7 @@
 
 import readline from 'node:readline';
 import path from 'node:path';
-import { getSettings } from '../src/pharos/settings.js';
+import { getSettings, saveSettings } from '../src/pharos/settings.js';
 import { hasProfile, saveProfile, getProfile } from '../src/pharos/profile.js';
 
 const mock = process.argv.includes('--mock');
@@ -21,18 +21,27 @@ const noPrewarm = process.argv.includes('--no-prewarm');
 // live warm sessions. Live runs use the default (.pharos/registry.json).
 const registryPath = mock ? path.join(process.cwd(), '.pharos', 'registry.mock.json') : undefined;
 
-// ---- tiny dependency-free terminal UI ----
+// ---- tiny dependency-free terminal UI · gold (Egypt) theme ----
 const TTY = !!process.stdout.isTTY;
-const C = TTY
-  ? { reset: '\x1b[0m', dim: '\x1b[2m', b: '\x1b[1m', cyan: '\x1b[36m', green: '\x1b[32m', yellow: '\x1b[33m', gray: '\x1b[90m', mag: '\x1b[35m', red: '\x1b[31m' }
-  : { reset: '', dim: '', b: '', cyan: '', green: '', yellow: '', gray: '', mag: '', red: '' };
+const g = (n) => (TTY ? `\x1b[38;5;${n}m` : ''); // 256-colour
+const C = {
+  reset: TTY ? '\x1b[0m' : '', dim: TTY ? '\x1b[2m' : '', b: TTY ? '\x1b[1m' : '',
+  gold: g(220), // bright gold — primary accent
+  deep: g(178), // deep gold
+  bronze: g(136), // bronze — rules / muted
+  sand: g(223), // light sand — body highlights
+  green: g(108), // sage — warm/ok
+  red: g(174), // soft red — errors/degraded
+  gray: g(244), // muted gray — notes
+};
 const W = () => Math.min(process.stdout.columns || 80, 96) - 2;
 const rule = (ch = '─') => ch.repeat(Math.max(8, W()));
 
-// The framed input box (top + left bar). The bottom border is drawn on submit, so the
-// box closes neatly around whatever was typed. Plain prompt when not a TTY.
-const PROMPT = TTY ? `${C.cyan}╭${rule()}╮${C.reset}\n${C.cyan}│${C.reset} ${C.b}${C.cyan}›${C.reset} ` : 'alexandria› ';
-const closeBox = () => { if (TTY) process.stdout.write(`${C.cyan}╰${rule()}╯${C.reset}\n`); };
+// The input prompt: a slim bronze rule above (the "line around where you type") and a
+// gold ankh marker — open by design, so nothing ever looks half-drawn or cut off. A
+// true fixed-bottom floating box would need a raw-mode TUI; this reads clean in plain
+// readline. Plain prompt when not a TTY.
+const PROMPT = TTY ? `\n  ${C.bronze}${rule()}${C.reset}\n  ${C.gold}◆${C.reset} ${C.deep}›${C.reset} ` : 'alexandria› ';
 
 // An animated "thinking" line (braille spinner + elapsed seconds), cleared in place
 // when the answer arrives. No-op on a non-TTY (keeps piped output clean).
@@ -43,7 +52,7 @@ function thinking(label = 'routing') {
   let i = 0;
   const timer = setInterval(() => {
     const s = ((Date.now() - t0) / 1000).toFixed(1);
-    process.stdout.write(`\r${C.cyan}${frames[i = (i + 1) % frames.length]}${C.reset} ${C.dim}${label}… ${s}s${C.reset}\x1b[K`);
+    process.stdout.write(`\r${C.gold}${frames[i = (i + 1) % frames.length]}${C.reset} ${C.dim}${label}… ${s}s${C.reset}\x1b[K`);
   }, 80);
   return { stop() { clearInterval(timer); process.stdout.write('\r\x1b[K'); } };
 }
@@ -55,15 +64,15 @@ const ask = (rl, q) => new Promise((res) => rl.question(q, res));
 // silently keeps the neutral default. profile.js pulls in nothing heavy.
 if (!hasProfile() && process.stdin.isTTY) {
   const rl0 = readline.createInterface({ input: process.stdin, output: process.stdout });
-  console.log(`\n  ${C.b}${C.cyan}✦ Alexandria${C.reset} ${C.dim}— first run.${C.reset}\n`);
-  const name = (await ask(rl0, `  ${C.cyan}What should your Keepers call you?${C.reset} `)).trim();
+  console.log(`\n  ${C.b}${C.gold}✦ Alexandria${C.reset} ${C.dim}— first run.${C.reset}\n`);
+  const name = (await ask(rl0, `  ${C.gold}What should your Keepers call you?${C.reset} `)).trim();
   rl0.close();
   const saved = saveProfile({ name: name || 'operator' });
   console.log(`\n  ${C.green}✓${C.reset} Setting up Alexandria for ${C.b}${saved.name}${C.reset}…\n`);
 }
 
 const profile = getProfile();
-const cfg = getSettings();
+let cfg = getSettings();
 let showMetrics = cfg.metrics;
 
 // Import the rest AFTER onboarding so KEEPERS build with the saved name.
@@ -76,9 +85,9 @@ const { tokenLimit } = await import('../src/pharos/tokens.js');
 const roster = KEEPERS.filter((k) => k.active).map((k) => `${C.b}${k.id[0].toUpperCase() + k.id.slice(1)}${C.reset}${C.dim}(${k.alias})${C.reset}`).join('  ');
 
 console.log('');
-console.log(`  ${C.b}${C.cyan}Alexandria${C.reset}  ${C.dim}Pharos routes · Keepers hold · Alexandria remembers${C.reset}  ${C.gray}·${C.reset}  ${C.mag}${profile.name}${C.reset}`);
+console.log(`  ${C.b}${C.gold}Alexandria${C.reset}  ${C.dim}Pharos routes · Keepers hold · Alexandria remembers${C.reset}  ${C.gray}·${C.reset}  ${C.sand}${profile.name}${C.reset}`);
 console.log(`  ${C.dim}${mock ? 'mock mode (no API)' : 'live mode'} ${C.reset}${roster}`);
-console.log(`  ${C.gray}/metrics  /status  /exit${C.reset}`);
+console.log(`  ${C.gray}/settings  /metrics  /status  /exit${C.reset}`);
 console.log('');
 
 // Warm every Keeper up front (parallel) so the first switch to a domain resumes a
@@ -101,12 +110,12 @@ if (!mock && !noPrewarm && cfg.prewarm) {
     const render = () => {
       const cells = active.map((k) =>
         lit[k.id]
-          ? `${C.yellow}◆${C.reset} ${C.b}${label(k)}${C.reset}`
+          ? `${C.deep}◆${C.reset} ${C.b}${label(k)}${C.reset}`
           : `${C.gray}${flames[frame % flames.length]}${C.reset} ${C.dim}${label(k)}${C.reset}`,
       ).join('   ');
       process.stdout.write(`\r  ${C.dim}lighting the Pharos${C.reset}  ${cells}\x1b[K`);
     };
-    process.stdout.write(`\n  ${C.cyan}${C.b}🗼 Alexandria${C.reset}\n\n`);
+    process.stdout.write(`\n  ${C.gold}${C.b}✦ Alexandria${C.reset}\n\n`);
     const timer = setInterval(() => { frame++; render(); }, 80);
     render();
     await prewarmAll({ settings: cfg, onResult: (k, ok) => { lit[k.id] = ok || lit[k.id]; render(); } });
@@ -126,14 +135,56 @@ function printMetrics(r) {
   const lim = tokenLimit();
   const ctx = r.contextTokens || 0;
   const pct = lim ? Math.round((ctx / lim) * 100) : 0;
-  const heat = pct >= 80 ? C.red : pct >= 50 ? C.yellow : C.green;
+  const heat = pct >= 80 ? C.red : pct >= 50 ? C.deep : C.green;
   const flags = [
-    r.compacting && `${C.yellow}⟳ compacting${C.reset}`,
+    r.compacting && `${C.deep}⟳ compacting${C.reset}`,
     r.degraded && `${C.red}⚠ degraded${C.reset}`,
     r.redone && !r.degraded && `${C.green}reseeded${C.reset}`,
     r.recalled?.length && `${C.dim}recalled ${r.recalled.length}${C.reset}`,
   ].filter(Boolean).join(`${C.dim} · ${C.reset}`);
   console.log(`  ${C.gray}⊙${C.reset} ${C.dim}ctx${C.reset} ${heat}${ctx.toLocaleString()}${C.reset}${C.dim}/${lim.toLocaleString()} (${pct}%) · ${r.fresh ? 'fresh' : 'warm'}${C.reset}${flags ? `${C.dim} · ${C.reset}${flags}` : ''}`);
+}
+
+// /settings — view and toggle. `/settings` lists; `/settings <key>` flips a bool;
+// `/settings <key> <value>` sets a string (sharedTools/mcpConfig). Writes through to
+// .pharos/settings.json so the next turn's getSettings() picks it up.
+const BOOL_KEYS = ['reframe', 'revoice', 'skipPerms', 'prewarm', 'metrics'];
+const STR_KEYS = ['sharedTools', 'mcpConfig'];
+const SETTING_HELP = {
+  reframe: 'secretary rewrites your prompt for the Keeper',
+  revoice: 'secretary re-voices the Keeper\'s answer',
+  skipPerms: 'boats run headless (skip permission prompts)',
+  prewarm: 'warm all Keepers on startup',
+  metrics: 'show the per-turn metrics line',
+  sharedTools: 'extra built-in tools every Keeper can load on demand',
+  mcpConfig: 'shared MCP connector config (browser/Gmail/…) for every Keeper',
+};
+function printSettings() {
+  console.log(`  ${C.b}${C.gold}Settings${C.reset}`);
+  for (const k of BOOL_KEYS) {
+    const on = cfg[k];
+    console.log(`    ${on ? `${C.green}●${C.reset}` : `${C.gray}○${C.reset}`} ${C.b}${k.padEnd(11)}${C.reset} ${C.dim}${(on ? 'on' : 'off').padEnd(4)} ${SETTING_HELP[k]}${C.reset}`);
+  }
+  for (const k of STR_KEYS) {
+    console.log(`    ${C.gray}◦${C.reset} ${C.b}${k.padEnd(11)}${C.reset} ${C.dim}${(cfg[k] || '(none)')}  ${SETTING_HELP[k]}${C.reset}`);
+  }
+  console.log(`  ${C.gray}/settings <key> to toggle · /settings <key> <value> to set${C.reset}\n`);
+}
+function changeSettings(args) {
+  const [key, ...rest] = args;
+  if (!key) return printSettings();
+  if (BOOL_KEYS.includes(key)) {
+    const val = rest.length ? /^(1|true|on|yes)$/i.test(rest[0]) : !cfg[key];
+    cfg = saveSettings({ [key]: val });
+    if (key === 'metrics') showMetrics = val;
+    console.log(`  ${C.green}✓${C.reset} ${key} ${val ? `${C.green}on` : 'off'}${C.reset}\n`);
+  } else if (STR_KEYS.includes(key)) {
+    const val = rest.join(' ');
+    cfg = saveSettings({ [key]: val });
+    console.log(`  ${C.green}✓${C.reset} ${key} = ${C.gold}${val || '(none)'}${C.reset}\n`);
+  } else {
+    console.log(`  ${C.red}unknown setting${C.reset} ${C.dim}'${key}' — try one of: ${[...BOOL_KEYS, ...STR_KEYS].join(', ')}${C.reset}\n`);
+  }
 }
 
 function printStatus() {
@@ -143,7 +194,7 @@ function printStatus() {
   for (const k of KEEPERS.filter((k) => k.active)) {
     const warm = !!(reg.sessions && reg.sessions[k.id]);
     const dot = warm ? `${C.green}●${C.reset}` : `${C.gray}○${C.reset}`;
-    const here = cur === k.id ? `  ${C.cyan}← here${C.reset}` : '';
+    const here = cur === k.id ? `  ${C.gold}← here${C.reset}` : '';
     console.log(`    ${dot} ${C.b}${k.id.padEnd(8)}${C.reset} ${C.dim}${k.alias.padEnd(10)}${warm ? 'warm' : 'cold'}${C.reset}${here}`);
   }
   console.log(`  ${C.dim}metrics ${showMetrics ? 'on' : 'off'}${cfg.mcpConfig ? ` · mcp ${cfg.mcpConfig}` : ''}${cfg.sharedTools ? ` · shared tools ${cfg.sharedTools}` : ''}${C.reset}`);
@@ -151,7 +202,12 @@ function printStatus() {
 }
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: PROMPT });
-rl.prompt();
+
+// Input prompt: a top rule + `◆ › `. (A persistent bottom border WHILE typing isn't
+// possible in plain readline — readline owns the input line and fights any manual
+// paint below it, producing a staircase. A true fixed box needs a raw-mode TUI.)
+const reprompt = () => rl.prompt();
+reprompt();
 
 // Serialize turns and track the in-flight one so a stdin close (EOF / piped input)
 // waits for it instead of dropping it. Pause input while a turn runs.
@@ -159,37 +215,46 @@ let pending = Promise.resolve();
 let closed = false;
 rl.on('line', (line) => {
   const p = line.trim();
-  closeBox();
-  if (!p) return rl.prompt();
+  if (!p) return reprompt();
   if (p === '/exit' || p === '/quit') return rl.close();
   if (p === '/metrics') {
     showMetrics = !showMetrics;
     console.log(`  ${C.dim}metrics ${showMetrics ? `${C.green}on` : 'off'}${C.reset}\n`);
-    return rl.prompt();
+    return reprompt();
   }
   if (p === '/status') {
     printStatus();
-    return rl.prompt();
+    return reprompt();
+  }
+  if (p === '/settings' || p.startsWith('/settings ')) {
+    changeSettings(p.split(/\s+/).slice(1));
+    return reprompt();
   }
 
   rl.pause();
   pending = (async () => {
+    const t0 = Date.now();
     const spin = thinking('routing');
     const r = await handle(p, { mock, registryPath });
     spin.stop();
-    const arrow = r.switched ? `${C.cyan}↪${C.reset}` : `${C.gray}·${C.reset}`;
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    const arrow = r.switched ? `${C.gold}↪${C.reset}` : `${C.gray}·${C.reset}`;
     const recall = r.recalled?.length ? ` ${C.dim}· recalled ${r.recalled.length}${C.reset}` : '';
     const flush = r.redone ? (r.degraded ? ` ${C.red}· ⚠ degraded${C.reset}` : ` ${C.green}· reseeded${C.reset}`) : '';
-    const early = r.compacting ? ` ${C.yellow}· ⟳ pre-compacted${C.reset}` : '';
+    const early = r.compacting ? ` ${C.deep}· ⟳ pre-compacted${C.reset}` : '';
     console.log(`  ${arrow} ${C.b}${r.routed}${C.reset} ${C.dim}(${r.alias})${C.reset} ${C.gray}${r.note}${r.fresh ? ' · new' : ''}${C.reset}${recall}${flush}${early}`);
     if (showMetrics) printMetrics(r);
     console.log('');
     // Indent the answer body under a soft left gutter for readability.
     console.log(r.text.split('\n').map((l) => `  ${l}`).join('\n'));
+    // The footer Josh likes: how long it took + how loaded the thread is now.
+    const ctx = r.contextTokens || 0;
+    const tok = ctx >= 1000 ? `${(ctx / 1000).toFixed(1)}k` : `${ctx}`;
+    console.log(`  ${C.gray}⧗ ${secs}s${ctx ? ` ${C.dim}·${C.gray} ◈ ${tok} tokens` : ''}${C.reset}`);
     console.log('');
     if (closed) return; // EOF arrived mid-turn — don't touch a closed interface
     rl.resume();
-    rl.prompt();
+    reprompt();
   })();
 });
 

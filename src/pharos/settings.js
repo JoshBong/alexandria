@@ -72,6 +72,22 @@ function envBool(name) {
   return undefined;
 }
 
+// Persist a partial change to .pharos/settings.json (merging onto what's there), so a
+// runtime `/settings` toggle survives restarts and is picked up by the next turn's
+// getSettings(). Returns the resolved settings after the write.
+export function saveSettings(patch, { settingsPath } = {}) {
+  const p = settingsPath || path.join(process.cwd(), '.pharos', 'settings.json');
+  let cur = {};
+  try {
+    cur = JSON.parse(fs.readFileSync(p, 'utf8')) || {};
+  } catch {
+    /* no file yet */
+  }
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ ...cur, ...patch }, null, 2) + '\n');
+  return getSettings({ settingsPath });
+}
+
 export function getSettings({ settingsPath } = {}) {
   const out = { ...DEFAULTS, ...STRING_DEFAULTS };
 
