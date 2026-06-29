@@ -242,7 +242,7 @@ function printStatus() {
 // library like Ink. This is one persistent interface with a clean ⟡ prompt — reliable
 // everywhere, including piped/non-TTY. ----
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-const PROMPT = TTY ? `\n  ${C.gold}⟡${C.reset} ${C.deep}›${C.reset} ` : "alexandria› ";
+const PROMPT = TTY ? `  ${C.gold}⟡${C.reset} ${C.deep}›${C.reset} ` : "alexandria› ";
 
 // Handle one submitted line. Returns false to quit the loop, true to keep going.
 async function handleLine(line) {
@@ -284,7 +284,7 @@ async function handleLine(line) {
 
   // A question → route it to a Keeper.
   const t0 = Date.now();
-  const spin = thinking('routing');
+  const spin = thinking('thinking');
   const r = await handle(p, { mock, registryPath });
   spin.stop();
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
@@ -292,13 +292,16 @@ async function handleLine(line) {
   const recall = r.recalled?.length ? ` ${C.dim}· recalled ${r.recalled.length}${C.reset}` : '';
   const flush = r.redone ? (r.degraded ? ` ${C.red}· ⚠ degraded${C.reset}` : ` ${C.green}· reseeded${C.reset}`) : '';
   const early = r.compacting ? ` ${C.deep}· ⟳ pre-compacted${C.reset}` : '';
-  console.log(`  ${arrow} ${C.b}${r.routed}${C.reset} ${C.dim}(${r.alias})${C.reset} ${C.gray}${r.note}${r.fresh ? ' · new' : ''}${C.reset}${recall}${flush}${early}`);
+  // Header ABOVE the answer: who answered + how long it took + how loaded the thread is.
+  // (The live elapsed time shows DURING the turn via the spinner above; the token count
+  // is only known once the boat returns, so it lands here.)
+  const ctx = r.contextTokens || 0;
+  const tok = ctx >= 1000 ? `${(ctx / 1000).toFixed(1)}k` : `${ctx}`;
+  const meter = `  ${C.gray}⧖ ${secs}s${ctx ? ` ${C.dim}·${C.gray} ◈ ${tok} tokens` : ''}${C.reset}`;
+  console.log(`  ${arrow} ${C.b}${r.routed}${C.reset} ${C.dim}(${r.alias})${C.reset} ${C.gray}${r.note}${r.fresh ? ' · new' : ''}${C.reset}${recall}${flush}${early}${meter}`);
   if (showMetrics) printMetrics(r);
   console.log('');
   console.log(r.text.split('\n').map((l) => `  ${l}`).join('\n')); // answer under a soft left gutter
-  const ctx = r.contextTokens || 0;
-  const tok = ctx >= 1000 ? `${(ctx / 1000).toFixed(1)}k` : `${ctx}`;
-  console.log(`  ${C.gray}⧖ ${secs}s${ctx ? ` ${C.dim}·${C.gray} ◈ ${tok} tokens` : ''}${C.reset}`); // timer + token load
   console.log('');
   return true;
 }
