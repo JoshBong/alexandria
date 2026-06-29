@@ -86,8 +86,9 @@ const { tokenLimit } = await import('../src/pharos/tokens.js');
 const roster = KEEPERS.filter((k) => k.active).map((k) => `${C.b}${k.id[0].toUpperCase() + k.id.slice(1)}${C.reset}${C.dim}(${k.alias})${C.reset}`).join('  ');
 
 console.log('');
-console.log(`  ${C.b}${C.gold}Alexandria${C.reset}  ${C.dim}Pharos routes · Keepers hold · Alexandria remembers${C.reset}  ${C.gray}·${C.reset}  ${C.sand}${profile.name}${C.reset}`);
+console.log(`  ${C.b}${C.gold}Alexandria${C.reset}  ${C.dim}Pharos routes · Keepers hold · Alexandria remembers${C.reset}`);
 console.log(`  ${C.dim}${mock ? 'mock mode (no API)' : 'live mode'} ${C.reset}${roster}`);
+console.log(`  ${C.gray}logged in as ${C.reset}${C.sand}${profile.name}${C.reset}`);
 console.log(`  ${C.gray}/help for commands  ·  /exit to quit${C.reset}`);
 console.log('');
 
