@@ -11,12 +11,18 @@
 // backstop; token-low is the intended EARLY trigger. We strip the marker before
 // relaying so Josh never sees the plumbing.
 
-export const CANARY = '⟡';
+export const CANARY = '❖';
 
 // Appended to every Keeper persona at session creation, so it persists across
 // --resume turns (the system prompt is set once). Constant → stays cache-stable.
+// Phrased emphatically to reduce drops (LLMs follow "always append X" only
+// probabilistically — see note below), but it can never be 100%, which is exactly
+// why the redo is gated on token load and the deterministic token-count is the real
+// freshness signal.
 export const CANARY_INSTRUCTION =
-  `\n\nAlways end every reply with this marker on its own final line: ${CANARY}`;
+  `\n\nMANDATORY OUTPUT RULE: every single reply you produce — no matter how short — ` +
+  `must end with this exact character on its own final line: ${CANARY}\n` +
+  `Never omit it. It is a silent system marker, not shown to the user.`;
 
 export function hasCanary(text) {
   return typeof text === 'string' && text.includes(CANARY);

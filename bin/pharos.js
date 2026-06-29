@@ -42,7 +42,7 @@ const rule = (ch = '─') => ch.repeat(Math.max(8, W()));
 // gold ankh marker — open by design, so nothing ever looks half-drawn or cut off. A
 // true fixed-bottom floating box would need a raw-mode TUI; this reads clean in plain
 // readline. Plain prompt when not a TTY.
-const PROMPT = TTY ? `\n  ${C.gold}◆${C.reset} ${C.deep}›${C.reset} ` : 'alexandria› ';
+const PROMPT = TTY ? `\n  ${C.gold}⟡${C.reset} ${C.deep}›${C.reset} ` : 'alexandria› ';
 
 // An animated "thinking" line (braille spinner + elapsed seconds), cleared in place
 // when the answer arrives. No-op on a non-TTY (keeps piped output clean).
@@ -111,7 +111,7 @@ if (!mock && !noPrewarm && cfg.prewarm) {
     const render = () => {
       const cells = active.map((k) =>
         lit[k.id]
-          ? `${C.deep}◆${C.reset} ${C.b}${label(k)}${C.reset}`
+          ? `${C.deep}⟡${C.reset} ${C.b}${label(k)}${C.reset}`
           : `${C.gray}${flames[frame % flames.length]}${C.reset} ${C.dim}${label(k)}${C.reset}`,
       ).join('   ');
       process.stdout.write(`\r  ${C.dim}lighting the Pharos${C.reset}  ${cells}\x1b[K`);
@@ -219,7 +219,7 @@ function printStatus() {
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: PROMPT });
 
-// Input prompt: a top rule + `◆ › `. (A persistent bottom border WHILE typing isn't
+// Input prompt: a `⟡ › ` marker. (A persistent bottom border WHILE typing isn't
 // possible in plain readline — readline owns the input line and fights any manual
 // paint below it, producing a staircase. A true fixed box needs a raw-mode TUI.)
 const reprompt = () => rl.prompt();
