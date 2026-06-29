@@ -134,7 +134,10 @@ export function buildKeepers({ profile = getProfile(), overrides = loadOverrides
   // Identity preamble on EVERY persona (incl. Anubis, which has no ${name} of its own)
   // so a Keeper always knows who it serves — and never falls back to git config / env
   // for the operator's name. "my"/"I" in a prompt means this person.
-  const identity = `You serve ${name} — when they say "my", "me", or "I", that refers to ${name}. `;
+  const identity =
+    `The operator you serve is named ${name}. This is authoritative: refer to them as ${name}, ` +
+    `and when they say "my", "me", or "I", that means ${name} — never substitute a name from ` +
+    `git config, the environment, or the working directory. `;
   const about = profile.about ? `${profile.about.trim()} ` : '';
   return BASE.map((k) => {
     const ov = overrides[k.id] || {};

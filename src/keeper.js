@@ -13,19 +13,21 @@ import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { KEEPERS } from './pharos/keepers.js';
 import { CANARY_INSTRUCTION } from './pharos/canary.js';
 import { contextTokensOf } from './pharos/tokens.js';
 import { getSettings } from './pharos/settings.js';
 
-// Where a boat runs. A `clean` (reasoner) Keeper spawns from a neutral, empty dir so
-// it doesn't inhabit the code repo — otherwise the base Claude Code identity + the
-// repo cwd make a personal/career Keeper introduce itself as "a coding agent in your
-// repo." Ptah (code) keeps the repo cwd (undefined → inherit). The neutral dir is
-// gitignored (under .pharos) and created on demand.
+// Where a boat runs. A `clean` (reasoner) Keeper spawns from a neutral, empty dir
+// OUTSIDE the repo (a git repo leaks the operator's git identity into the model's env
+// context — that's how a personal Keeper ended up answering "your name is <git
+// user.name>"). An out-of-repo temp dir has no git, no project files, no CLAUDE.md to
+// inhabit, so the Keeper relies purely on its persona. Ptah (code) keeps the repo cwd
+// (undefined → inherit). Created on demand; stable across prewarm and live turns.
 export function boatCwd(keeper) {
   if (!keeper.clean) return undefined;
-  const dir = join(process.cwd(), '.pharos', 'cwd');
+  const dir = join(tmpdir(), 'alexandria-keeper-cwd');
   try {
     mkdirSync(dir, { recursive: true });
   } catch {

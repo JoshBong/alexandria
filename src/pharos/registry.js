@@ -14,6 +14,23 @@ const file = join(repoRoot, '.pharos', 'registry.json');
 
 const fresh = () => ({ current: null, sessions: {} });
 
+// Bump whenever the boat spawn config changes in a way that makes EXISTING warm
+// sessions stale — persona/identity text, cwd, tools, setting-sources. A session bakes
+// its persona + environment at creation; prewarm SKIPS already-warm Keepers, so without
+// this an old session would survive a code change forever. migrateRegistry flushes the
+// sessions on a version mismatch so they re-create cleanly on next use.
+export const REGISTRY_VERSION = 4;
+
+export function migrateRegistry(reg) {
+  if (reg.version !== REGISTRY_VERSION) {
+    reg.sessions = {};
+    reg.current = null;
+    reg.version = REGISTRY_VERSION;
+    return true; // flushed
+  }
+  return false;
+}
+
 export function loadRegistry(target = file) {
   try {
     return { ...fresh(), ...JSON.parse(readFileSync(target, 'utf8')) };

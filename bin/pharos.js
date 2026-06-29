@@ -79,17 +79,24 @@ let showMetrics = cfg.metrics;
 // Import the rest AFTER onboarding so KEEPERS build with the saved name.
 const { handle } = await import('../src/pharos.js');
 const { prewarmAll } = await import('../src/pharos/prewarm.js');
-const { loadRegistry, saveRegistry } = await import('../src/pharos/registry.js');
+const { loadRegistry, saveRegistry, migrateRegistry } = await import('../src/pharos/registry.js');
 const { KEEPERS, applyProfile } = await import('../src/pharos/keepers.js');
 const { tokenLimit } = await import('../src/pharos/tokens.js');
+
+// Heal stale warm sessions: if the boat config changed since these sessions were
+// created (new persona/cwd/tools), flush them so prewarm re-creates them cleanly
+// instead of skipping the ones it finds "already warm."
+{
+  const reg = loadRegistry(registryPath);
+  if (migrateRegistry(reg)) saveRegistry(reg, registryPath);
+}
 
 const roster = KEEPERS.filter((k) => k.active).map((k) => `${C.b}${k.id[0].toUpperCase() + k.id.slice(1)}${C.reset}${C.dim}(${k.alias})${C.reset}`).join('  ');
 
 console.log('');
 console.log(`  ${C.b}${C.gold}Alexandria${C.reset}  ${C.dim}Pharos routes · Keepers hold · Alexandria remembers${C.reset}`);
 console.log(`  ${C.dim}${mock ? 'mock mode (no API)' : 'live mode'} ${C.reset}${roster}`);
-console.log(`  ${C.gray}logged in as ${C.reset}${C.sand}${profile.name}${C.reset}`);
-console.log(`  ${C.gray}/help for commands  ·  /exit to quit${C.reset}`);
+console.log(`  ${C.gray}logged in as ${C.reset}${C.sand}${profile.name}${C.reset}   ${C.gray}·   /help for commands  ·  /exit to quit${C.reset}`);
 console.log('');
 
 // Warm every Keeper up front (parallel) so the first switch to a domain resumes a
