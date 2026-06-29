@@ -3,18 +3,42 @@
 //
 //   node bin/pharos.js            # live (uses the claude CLI / subscription)
 //   node bin/pharos.js --mock     # offline: routes + switches, no API calls
+//   node bin/pharos.js --no-prewarm   # skip the startup Keeper warmup
 //
 // Type a prompt and press enter. /exit to quit.
 
 import readline from 'node:readline';
 import { handle } from '../src/pharos.js';
+import { getSettings } from '../src/pharos/settings.js';
+import { prewarmAll } from '../src/pharos/prewarm.js';
 
 const mock = process.argv.includes('--mock');
+const noPrewarm = process.argv.includes('--no-prewarm');
+const cfg = getSettings();
 
 console.log('');
 console.log('  Alexandria — Pharos routes · Keepers hold · Alexandria remembers');
-console.log(`  ${mock ? 'MOCK mode (no API)' : 'live mode'} · Keepers: Ptah(code) Ra(personal) Anubis(intake) · /exit to quit`);
+console.log(`  ${mock ? 'MOCK mode (no API)' : 'live mode'} · Keepers: Ptah(code) Ra(personal) Thoth(classwork) Horus(career) Anubis(intake) · /exit to quit`);
 console.log('');
+
+// Warm every Keeper up front (parallel) so the first switch to a domain resumes a
+// hot, prompt-cached thread instead of cold-spawning one. Off in mock / --no-prewarm
+// / when the setting is disabled. Best-effort — a Keeper that fails to warm just
+// spawns normally on first use.
+if (!mock && !noPrewarm && cfg.prewarm) {
+  process.stdout.write('  warming Keepers');
+  const tick = setInterval(() => process.stdout.write('.'), 400);
+  const { results } = await prewarmAll({ settings: cfg });
+  clearInterval(tick);
+  const ok = results.filter((r) => r.ok).map((r) => r.alias);
+  const failed = results.filter((r) => !r.ok).map((r) => r.alias);
+  console.log(
+    ok.length || failed.length
+      ? ` ${ok.length} warm${ok.length ? ` (${ok.join(', ')})` : ''}${failed.length ? ` · ${failed.length} cold (${failed.join(', ')})` : ''}`
+      : ' (all already warm)',
+  );
+  console.log('');
+}
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: 'alexandria› ' });
 rl.prompt();

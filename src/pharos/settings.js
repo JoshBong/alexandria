@@ -15,6 +15,11 @@
 //   skipPerms — boats spawn with `--dangerously-skip-permissions`. Default ON:
 //               boats are headless `claude -p` and an acting Keeper (Ptah) would
 //               otherwise hang on a permission prompt with no one to answer it.
+//   prewarm   — on Alexandria start, establish every active Keeper's session in
+//               PARALLEL (one cheap turn each) so the first switch to a domain is
+//               a warm `--resume` (persona prefix already prompt-cached) instead of
+//               a cold fresh spawn. Default ON. Costs N cheap calls at startup,
+//               once; trades a few seconds of boot for a faster first switch.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,12 +28,14 @@ export const DEFAULTS = {
   reframe: false,
   revoice: false,
   skipPerms: true,
+  prewarm: true,
 };
 
 const ENV = {
   reframe: 'ALEXANDRIA_REFRAME',
   revoice: 'ALEXANDRIA_REVOICE',
   skipPerms: 'ALEXANDRIA_SKIP_PERMS',
+  prewarm: 'ALEXANDRIA_PREWARM',
 };
 
 function envBool(name) {
