@@ -12,6 +12,7 @@
 
 import readline from 'node:readline';
 import path from 'node:path';
+import fs from 'node:fs';
 import { getSettings, saveSettings } from '../src/pharos/settings.js';
 import { hasProfile, saveProfile, getProfile } from '../src/pharos/profile.js';
 
@@ -41,7 +42,7 @@ const rule = (ch = '─') => ch.repeat(Math.max(8, W()));
 // gold ankh marker — open by design, so nothing ever looks half-drawn or cut off. A
 // true fixed-bottom floating box would need a raw-mode TUI; this reads clean in plain
 // readline. Plain prompt when not a TTY.
-const PROMPT = TTY ? `\n  ${C.bronze}${rule()}${C.reset}\n  ${C.gold}◆${C.reset} ${C.deep}›${C.reset} ` : 'alexandria› ';
+const PROMPT = TTY ? `\n  ${C.gold}◆${C.reset} ${C.deep}›${C.reset} ` : 'alexandria› ';
 
 // An animated "thinking" line (braille spinner + elapsed seconds), cleared in place
 // when the answer arrives. No-op on a non-TTY (keeps piped output clean).
@@ -87,7 +88,7 @@ const roster = KEEPERS.filter((k) => k.active).map((k) => `${C.b}${k.id[0].toUpp
 console.log('');
 console.log(`  ${C.b}${C.gold}Alexandria${C.reset}  ${C.dim}Pharos routes · Keepers hold · Alexandria remembers${C.reset}  ${C.gray}·${C.reset}  ${C.sand}${profile.name}${C.reset}`);
 console.log(`  ${C.dim}${mock ? 'mock mode (no API)' : 'live mode'} ${C.reset}${roster}`);
-console.log(`  ${C.gray}/settings  /metrics  /status  /exit${C.reset}`);
+console.log(`  ${C.gray}/settings  /metrics  /status  /reset  /exit${C.reset}`);
 console.log('');
 
 // Warm every Keeper up front (parallel) so the first switch to a domain resumes a
@@ -187,6 +188,21 @@ function changeSettings(args) {
   }
 }
 
+// /reset — wipe all operator state (.pharos: profile, settings, overrides, registry,
+// memory, warm sessions) so the next launch is a clean first-run. For testing the
+// setup flow from scratch. TODO before public release: gate behind an "are you sure?"
+// confirm so nobody nukes their state by accident.
+function doReset() {
+  const dir = path.join(process.cwd(), '.pharos');
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* best-effort */
+  }
+  console.log(`  ${C.green}✓${C.reset} reset — operator state wiped ${C.dim}(${dir})${C.reset}`);
+  console.log(`  ${C.dim}restart Alexandria (npm run alexandria) to set up from scratch.${C.reset}\n`);
+}
+
 function printStatus() {
   const reg = loadRegistry(registryPath);
   const cur = reg.current;
@@ -216,7 +232,12 @@ let closed = false;
 rl.on('line', (line) => {
   const p = line.trim();
   if (!p) return reprompt();
+  if (TTY) console.log(`  ${C.bronze}${rule()}${C.reset}`); // the divider hugs the line you just typed
   if (p === '/exit' || p === '/quit') return rl.close();
+  if (p === '/reset') {
+    doReset();
+    return reprompt();
+  }
   if (p === '/metrics') {
     showMetrics = !showMetrics;
     console.log(`  ${C.dim}metrics ${showMetrics ? `${C.green}on` : 'off'}${C.reset}\n`);
