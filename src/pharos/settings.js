@@ -46,10 +46,12 @@ export const DEFAULTS = {
 
 // String-valued settings (not booleans) — resolved separately from the bool flags.
 export const STRING_DEFAULTS = {
-  // Web tools on by default so every Keeper can look things up / do research on demand
-  // (they're deferred — each costs ~300 tokens only if actually used in a turn). Without
-  // this a reasoner Keeper has no way to check the web and has to say "I can't".
-  sharedTools: 'WebSearch,WebFetch',
+  // The read-only / research tools every Keeper gets by default: web (search+fetch) plus
+  // file inspection (read a referenced file, grep contents, glob for paths). All safe to
+  // share with any Keeper and deferred — each costs ~300 tokens only if used in a turn.
+  // The file/shell WRITERS (Bash/Write/Edit) are deliberately NOT here — sharing those
+  // with every Keeper is a footgun; toggle them per need in /settings → shared tools.
+  sharedTools: 'WebSearch,WebFetch,Read,Grep,Glob',
   mcpConfig: '',
   model: '', // which model the Keepers run on (claude CLI --model alias/id). '' = CLI default.
 };
