@@ -3,7 +3,26 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classify, tokenize, scorePrompt } from '../src/pharos/classify.js';
+import { classify, tokenize, scorePrompt, makeLLMClassifier } from '../src/pharos/classify.js';
+
+test('LLM classifier routes by the model reply (no keyword needed)', async () => {
+  // "make a website" has no obvious keyword for the scorer, but Pharos reads it.
+  const c = makeLLMClassifier({ run: async () => 'ptah' });
+  const d = await c('lets make a website', { currentKeeper: 'anubis' });
+  assert.equal(d.routed, 'ptah');
+  assert.equal(d.reason, 'llm');
+});
+
+test('LLM classifier tolerates a chatty reply and extracts the id', async () => {
+  const c = makeLLMClassifier({ run: async () => 'This belongs to Ra.' });
+  assert.equal((await c('book my flight')).routed, 'ra');
+});
+
+test('LLM classifier falls back to the keyword scorer when the model fails', async () => {
+  const c = makeLLMClassifier({ run: async () => { throw new Error('offline'); } });
+  const d = await c('refactor the parser function', { currentKeeper: null });
+  assert.equal(d.routed, 'ptah'); // keyword safety net still routes a clear code prompt
+});
 
 test('routes a strong code prompt to Ptah (argmax)', () => {
   const r = classify('fix the bug in the hook');

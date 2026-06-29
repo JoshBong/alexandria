@@ -4,14 +4,14 @@
 // Kept tiny and dependency-free. Injectable via getSettings({ settingsPath }) so
 // tests run against an isolated file (or none → defaults).
 //
-//   reframe   — the secretary REWRITES the user's prompt into a clean, context-
-//               stamped question before handing it to the Keeper (forward path).
-//               Costs +1 cheap LLM call per turn. Default off (the free local
-//               composer just frames + attaches recall).
-//   revoice   — the secretary RE-VOICES the Keeper's answer in one consistent
-//               Alexandria voice before returning it (return path). Costs +1 LLM
-//               call per turn. Default off (raw Keeper answer relayed straight
-//               through — faster, and each Keeper's own voice is usually fine).
+//   reframe   — the routed KEEPER (on its own model) REWRITES the user's prompt into
+//               a clean, context-stamped question before answering (forward path).
+//               Costs +1 LLM call per turn on the Keeper's model. Default off (the
+//               free local composer just frames + attaches recall).
+//   revoice   — the routed KEEPER (on its own model) RE-VOICES its answer in one
+//               consistent voice before returning it (return path). Costs +1 LLM call
+//               per turn. Default off (raw Keeper answer relayed straight through —
+//               faster, and each Keeper's own voice is usually fine).
 //   skipPerms — boats spawn with `--dangerously-skip-permissions`. Default ON:
 //               boats are headless `claude -p` and an acting Keeper (Ptah) would
 //               otherwise hang on a permission prompt with no one to answer it.
@@ -46,9 +46,20 @@ export const DEFAULTS = {
 
 // String-valued settings (not booleans) — resolved separately from the bool flags.
 export const STRING_DEFAULTS = {
-  sharedTools: '',
+  // Web tools on by default so every Keeper can look things up / do research on demand
+  // (they're deferred — each costs ~300 tokens only if actually used in a turn). Without
+  // this a reasoner Keeper has no way to check the web and has to say "I can't".
+  sharedTools: 'WebSearch,WebFetch',
   mcpConfig: '',
   model: '', // which model the Keepers run on (claude CLI --model alias/id). '' = CLI default.
+};
+
+// Number-valued settings.
+//   contextWindow — the model's context window, used as the "max" the UI shows context
+//                   load against (NOT the early-flush trigger). Default 200k; set to
+//                   1000000 for a 1M-context model.
+export const NUMBER_DEFAULTS = {
+  contextWindow: 200_000,
 };
 
 const ENV = {
@@ -63,6 +74,10 @@ const STRING_ENV = {
   sharedTools: 'ALEXANDRIA_SHARED_TOOLS',
   mcpConfig: 'ALEXANDRIA_MCP_CONFIG',
   model: 'ALEXANDRIA_MODEL',
+};
+
+const NUMBER_ENV = {
+  contextWindow: 'ALEXANDRIA_CONTEXT_WINDOW',
 };
 
 function envBool(name) {
@@ -91,7 +106,7 @@ export function saveSettings(patch, { settingsPath } = {}) {
 }
 
 export function getSettings({ settingsPath } = {}) {
-  const out = { ...DEFAULTS, ...STRING_DEFAULTS };
+  const out = { ...DEFAULTS, ...STRING_DEFAULTS, ...NUMBER_DEFAULTS };
 
   const p = settingsPath || path.join(process.cwd(), '.pharos', 'settings.json');
   let file = {};
@@ -99,6 +114,7 @@ export function getSettings({ settingsPath } = {}) {
     file = JSON.parse(fs.readFileSync(p, 'utf8')) || {};
     for (const k of Object.keys(DEFAULTS)) if (k in file) out[k] = !!file[k];
     for (const k of Object.keys(STRING_DEFAULTS)) if (typeof file[k] === 'string') out[k] = file[k];
+    for (const k of Object.keys(NUMBER_DEFAULTS)) if (Number.isFinite(file[k]) && file[k] > 0) out[k] = file[k];
   } catch {
     /* no file / unreadable → defaults */
   }
@@ -110,6 +126,10 @@ export function getSettings({ settingsPath } = {}) {
   for (const k of Object.keys(STRING_DEFAULTS)) {
     const e = process.env[STRING_ENV[k]];
     if (typeof e === 'string') out[k] = e;
+  }
+  for (const k of Object.keys(NUMBER_DEFAULTS)) {
+    const e = Number(process.env[NUMBER_ENV[k]]);
+    if (Number.isFinite(e) && e > 0) out[k] = e;
   }
 
   return out;

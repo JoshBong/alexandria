@@ -15,6 +15,9 @@ import { handle } from '../src/pharos.js';
 
 const tmpDir = (n) => mkdtempSync(join(tmpdir(), `alex-tokens-${n}-`));
 const emptyStore = { source: 'test', async search() { return []; }, async write() {}, async get() {} };
+// Pin the LLM seams off — these gates run non-mock, so without this reframe/revoice would
+// read the operator's live settings file and spawn a real `claude`. See canary.test.js.
+const NO_LLM = { reframe: false, revoice: false };
 
 // ---- usage helpers ----
 
@@ -72,7 +75,7 @@ test('early gate: a heavy but clean turn relays as-is, then flushes + arms a res
   const dir = tmpDir('early');
   const reg = { current: 'ptah', sessions: { ptah: { sessionId: 's-old', started: true } }, recent: {} };
   const { fn, calls } = fakeRunner([{ text: `all green ${CANARY}`, contextTokens: 1200 }]);
-  const r = await handle('does it pass now', { reg, persist: false, store: emptyStore, runTurn: fn, handoff: { dir } });
+  const r = await handle('does it pass now', { reg, persist: false, store: emptyStore, runTurn: fn, handoff: { dir }, settings: NO_LLM });
 
   assert.equal(calls.length, 1, 'no redo — the turn was good');
   assert.equal(r.redone, false);
@@ -97,7 +100,7 @@ test('early gate: the next turn to a flushed Keeper opens fresh and reseeded', a
     reseedPending: { ptah: true },
   };
   const { fn, calls } = fakeRunner([{ text: `picking up ${CANARY}`, contextTokens: 10 }]);
-  const r = await handle('does it pass now', { reg, persist: false, store: emptyStore, runTurn: fn });
+  const r = await handle('does it pass now', { reg, persist: false, store: emptyStore, runTurn: fn, settings: NO_LLM });
 
   assert.equal(calls[0].fresh, true, 'opened a fresh session');
   assert.match(calls[0].prompt, /Resuming your code thread/, 'reseed preamble prepended');
@@ -113,7 +116,7 @@ test('early gate: a turn under the limit keeps the warm session', async () => {
   process.env.ALEXANDRIA_TOKEN_LIMIT = '1000';
   const reg = { current: 'ptah', sessions: { ptah: { sessionId: 's', started: true } }, recent: {} };
   const { fn } = fakeRunner([{ text: `fine ${CANARY}`, contextTokens: 200 }]);
-  const r = await handle('does it pass now', { reg, persist: false, store: emptyStore, runTurn: fn });
+  const r = await handle('does it pass now', { reg, persist: false, store: emptyStore, runTurn: fn, settings: NO_LLM });
 
   assert.equal(r.compacting, false);
   assert.ok(reg.sessions.ptah, 'warm session retained');

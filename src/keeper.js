@@ -9,7 +9,7 @@
 // `mock: true` skips the CLI entirely and returns a deterministic line — used to
 // test routing / stickiness / warm-switching offline, without the (flaky) API.
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -53,11 +53,19 @@ export function boatExtraArgs(keeper, cfg) {
   if (keeper.clean) extra.push('--setting-sources', 'local');
   if (cfg.skipPerms) extra.push('--dangerously-skip-permissions');
   if (cfg.mcpConfig) extra.push('--mcp-config', cfg.mcpConfig);
-  if (cfg.model) extra.push('--model', cfg.model);
+  // A Keeper's own `model` wins over the global setting — so a generalist like Anubis
+  // can run on a cheaper model than the acting/specialist Keepers. Falls back to cfg.model,
+  // then the CLI default.
+  const model = keeper.model || cfg.model;
+  if (model) extra.push('--model', model);
   return extra;
 }
 
-export function runTurn(keeperId, prompt, { mock = false, reg, settings } = {}) {
+// ASYNC by design: the live turn spawns `claude` non-blocking (was spawnSync, which
+// froze the whole event loop for the turn's duration — so any setInterval, like the
+// thinking spinner, never painted). With async spawn the loop stays free to animate
+// while the boat thinks. The mock path is synchronous work wrapped in the async return.
+export async function runTurn(keeperId, prompt, { mock = false, reg, settings } = {}) {
   const keeper = KEEPERS.find((k) => k.id === keeperId) || { id: keeperId, alias: keeperId, persona: '' };
   const existing = reg.sessions[keeperId];
   const fresh = !existing;
@@ -98,7 +106,20 @@ export function runTurn(keeperId, prompt, { mock = false, reg, settings } = {}) 
     args = ['-p', '--resume', sessionId, ...extra, '--output-format', 'json', prompt];
   }
 
-  const res = spawnSync('claude', args, { env, encoding: 'utf8', maxBuffer: 1e8, cwd: boatCwd(keeper) });
+  const res = await new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let child;
+    try {
+      child = spawn('claude', args, { env, cwd: boatCwd(keeper) });
+    } catch (error) {
+      return resolve({ error });
+    }
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('error', (error) => resolve({ error }));
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+  });
   if (res.error) {
     return { text: `    [${keeperId}] ⚠ failed to launch claude: ${res.error.message}`, sessionId, fresh, error: true };
   }

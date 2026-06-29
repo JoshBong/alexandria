@@ -5,7 +5,7 @@
 // updates the registry. Inactive Keepers (no live session yet, e.g. Thoth/Horus
 // in Phase 1) fall back to intake (Anubis) with a note.
 
-import { classify } from './pharos/classify.js';
+import { classify, makeLLMClassifier } from './pharos/classify.js';
 import { KEEPERS } from './pharos/keepers.js';
 import { loadRegistry, saveRegistry } from './pharos/registry.js';
 import { runTurn } from './keeper.js';
@@ -20,6 +20,7 @@ import { makeReframeComposer, revoiceAnswer } from './pharos/reframe.js';
 
 const ACTIVE = new Set(KEEPERS.filter((k) => k.active).map((k) => k.id));
 const aliasOf = (id) => (KEEPERS.find((k) => k.id === id) || {}).alias || id;
+const modelOf = (id) => (KEEPERS.find((k) => k.id === id) || {}).model;
 
 export async function handle(prompt, opts = {}) {
   const { mock = false, persist = true } = opts;
@@ -31,10 +32,13 @@ export async function handle(prompt, opts = {}) {
   // injected) — so mock tests never spawn a real `claude` even if a flag leaked on.
   const wantLLM = (flag) => flag && (!mock || !!opts.ask);
 
-  // classify is injectable (opts.classify) for tests of the routing/fallback seam,
-  // consistent with opts.compose / opts.runTurn / opts.store.
-  const classifyFn = opts.classify || classify;
-  const decision = classifyFn(prompt, { currentKeeper: reg.current });
+  // Routing is LLM-first: when an `ask` runner is available (live — the entrypoint
+  // injects askOnce), Pharos READS the message and picks the domain. Without a
+  // runner (mock / offline tests) it falls back to the keyword scorer — which also stays
+  // the safety net inside makeLLMClassifier if the model call fails. opts.classify still
+  // overrides everything (tests of the routing/fallback seam).
+  const classifyFn = opts.classify || (opts.ask ? makeLLMClassifier({ run: opts.ask }) : classify);
+  const decision = await classifyFn(prompt, { currentKeeper: reg.current });
   let routed = decision.routed;
   let note = decision.reason;
 
@@ -58,13 +62,19 @@ export async function handle(prompt, opts = {}) {
     }
   }
 
-  // The secretary writes the turn (it doesn't just hand off the raw prompt): the
-  // composer frames the request and attaches recalled context. Injectable via
-  // opts.compose so an LLM-backed writer can replace the default local one. With no
-  // recall, composeTurn returns the prompt unchanged (mock/warm-hit paths untouched).
-  // reframe ON → the secretary rewrites the prompt into a clean question for the
-  // Keeper (forward path). OFF → the free local composer frames + attaches recall.
-  const compose = opts.compose || (wantLLM(cfg.reframe) ? makeReframeComposer({ run: opts.ask }) : composeTurn);
+  // reframe/revoice are the KEEPER's own passes, not Pharos's cheap router — so they run
+  // on the routed Keeper's model and match whoever is answering. opts.ask is the same
+  // one-shot runner; we bind it to this Keeper's model (its override, else the global
+  // model setting, else the CLI default). Routing itself stays on the cheap model.
+  const keeperModel = modelOf(routed) || cfg.model || undefined;
+  const keeperAsk = opts.ask ? (q, o = {}) => opts.ask(q, { model: keeperModel, ...o }) : opts.ask;
+
+  // The turn gets composed (it isn't just the raw prompt): the composer frames the request
+  // and attaches recalled context. Injectable via opts.compose so an LLM-backed writer can
+  // replace the default local one. With no recall, composeTurn returns the prompt unchanged
+  // (mock/warm-hit paths untouched). reframe ON → the Keeper rewrites the prompt into a
+  // clean question first (forward path). OFF → the free local composer frames + attaches recall.
+  const compose = opts.compose || (wantLLM(cfg.reframe) ? makeReframeComposer({ run: keeperAsk }) : composeTurn);
   const fresh = !reg.sessions[routed];
   let turnPrompt = await compose({ prompt, recalled, fresh, switched: routed !== reg.current, alias: aliasOf(routed) });
 
@@ -84,12 +94,12 @@ export async function handle(prompt, opts = {}) {
   }
 
   // Track this prompt against the Keeper's recent-list — the reseed source if the
-  // thread later degrades. Pointers, not warm context (stateless-secretary rule).
+  // thread later degrades. Pointers, not warm context (stateless-head rule).
   trackRecent(reg, routed, prompt);
 
   const switched = routed !== reg.current;
   const run = opts.runTurn || runTurn;
-  let turn = run(routed, turnPrompt, { mock, reg, settings: cfg });
+  let turn = await run(routed, turnPrompt, { mock, reg, settings: cfg });
 
   // The canary gate. Late-but-better-than-nothing (Josh): if a warm thread that's
   // ALREADY heavy lost its marker, it's degraded — write a handoff, flush the session,
@@ -106,7 +116,7 @@ export async function handle(prompt, opts = {}) {
     const reseed = buildReseed(routed, aliasOf(routed), reg);
     const redoPrompt = reseed ? `${reseed}\n\n${turnPrompt}` : turnPrompt;
     if (reseed) reseeded = true;
-    turn = run(routed, redoPrompt, { mock, reg, settings: cfg }); // fresh session
+    turn = await run(routed, redoPrompt, { mock, reg, settings: cfg }); // fresh session
     redone = true;
     degraded = !hasCanary(turn.text); // still no canary → honestly flag it
   }
@@ -125,10 +135,10 @@ export async function handle(prompt, opts = {}) {
     compacting = true;
   }
 
-  // revoice ON → the secretary re-delivers the Keeper's answer in one consistent
-  // voice (return path). OFF → relay the Keeper's answer straight through.
+  // revoice ON → the Keeper re-delivers its own answer in one consistent voice (return
+  // path, on its own model). OFF → relay the Keeper's answer straight through.
   let finalText = stripCanary(turn.text);
-  if (wantLLM(cfg.revoice)) finalText = await revoiceAnswer({ answer: finalText, prompt }, { run: opts.ask });
+  if (wantLLM(cfg.revoice)) finalText = await revoiceAnswer({ answer: finalText, prompt }, { run: keeperAsk });
 
   reg.current = routed;
   if (persist) saveRegistry(reg, opts.registryPath);
@@ -177,7 +187,12 @@ export async function handle(prompt, opts = {}) {
     redone,
     degraded,
     compacting,
-    contextTokens: turn.contextTokens || 0,
+    contextTokens: turn.contextTokens || 0, // TOTAL resident context carried into the turn
+    // Per-turn token usage — the MARGINAL cost of THIS question (new input + the answer),
+    // distinct from contextTokens (the whole replayed thread). The UI shows this, not the
+    // total, so "hi" reads as ~17 tokens, not the 20k+ of resident context.
+    usage: turn.usage || null,
+    turnTokens: (turn.usage?.input_tokens || 0) + (turn.usage?.output_tokens || 0),
     text: finalText,
   };
 }

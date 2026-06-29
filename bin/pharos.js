@@ -13,8 +13,11 @@
 import readline from 'node:readline';
 import path from 'node:path';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { getSettings, saveSettings } from '../src/pharos/settings.js';
 import { hasProfile, saveProfile, getProfile } from '../src/pharos/profile.js';
+import { layout, visLen, wrapInput } from '../src/pharos/boxui.js';
+import { initMenu, menuKey, MODEL_CHOICES, SHARED_TOOL_CHOICES, SETTINGS_SCHEMA } from '../src/pharos/menu.js';
 
 const mock = process.argv.includes('--mock');
 const noPrewarm = process.argv.includes('--no-prewarm');
@@ -40,21 +43,47 @@ const rule = (ch = '─') => ch.repeat(Math.max(8, W()));
 
 const PREFIX = `  ${C.gold}⟡${C.reset} ${C.deep}›${C.reset} `; // visible input marker
 
+// The "thinking" verbs — our own gerund list, Alexandria/Egypt-flavoured, shown in gold
+// while a Keeper works (Claude-Code style). One is picked at random per turn and rotates
+// every few seconds so a long turn doesn't feel stuck.
+const VERBS = [
+  'Routing', 'Divining', 'Summoning', 'Consulting', 'Pondering', 'Scribing',
+  'Deciphering', 'Illuminating', 'Kindling', 'Navigating', 'Conjuring', 'Inscribing',
+  'Surveying', 'Pathfinding', 'Decoding', 'Reasoning', 'Unfurling', 'Charting',
+  'Translating', 'Calibrating',
+];
+const verbAt = (elapsedMs, seed) => VERBS[(seed + Math.floor(elapsedMs / 7000)) % VERBS.length];
+
 // An animated "thinking" line (braille spinner + elapsed seconds), cleared in place
 // when the answer arrives. No-op on a non-TTY (keeps piped output clean).
-function thinking(label = 'routing') {
+function thinking(label = 'thinking') {
   if (!TTY) return { stop() {} };
   const frames = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
   const t0 = Date.now();
+  const seed = Math.floor(Math.random() * VERBS.length);
   let i = 0;
   const timer = setInterval(() => {
-    const s = ((Date.now() - t0) / 1000).toFixed(1);
-    process.stdout.write(`\r${C.gold}${frames[i = (i + 1) % frames.length]}${C.reset} ${C.dim}${label}… ${s}s${C.reset}\x1b[K`);
+    const el = Date.now() - t0;
+    process.stdout.write(`\r  ${C.gray}${frames[i = (i + 1) % frames.length]}${C.reset} ${C.b}${C.gold}${verbAt(el, seed)}…${C.reset} ${C.dim}(${Math.floor(el / 1000)}s · ${label})${C.reset}\x1b[K`);
   }, 80);
   return { stop() { clearInterval(timer); process.stdout.write('\r\x1b[K'); } };
 }
 
 const ask = (rl, q) => new Promise((res) => rl.question(q, res));
+
+// Prereq: Alexandria's Keepers ARE `claude` boats — the CLI must be installed and
+// signed in. Check once at startup (live only) and guide the user if it's missing,
+// instead of failing cryptically on the first turn. Mock mode needs no claude.
+if (!mock) {
+  let ok = false;
+  try { ok = spawnSync('claude', ['--version'], { stdio: 'ignore' }).status === 0; } catch { ok = false; }
+  if (!ok) {
+    console.log(`\n  ${C.red}✗ Claude Code CLI not found on PATH.${C.reset} Alexandria runs its Keepers on it.`);
+    console.log(`  ${C.dim}Install it (${C.reset}${C.gold}https://claude.com/claude-code${C.dim}), sign in, then re-run.${C.reset}`);
+    console.log(`  ${C.dim}Or explore offline with ${C.reset}${C.gold}alexandria --mock${C.reset}${C.dim}.${C.reset}\n`);
+    process.exit(1);
+  }
+}
 
 // First run: learn the operator's name BEFORE the Keeper registry is imported, so
 // personas interpolate it. Only when interactive — a piped/non-TTY run (tests, CI)
@@ -72,12 +101,26 @@ const profile = getProfile();
 let cfg = getSettings();
 let showMetrics = cfg.metrics;
 
+// The pinned-box controller while the TTY chat loop runs (else null). When active, all
+// console.log is redirected through its scroll-region writer (see startBox), so every
+// existing print lands ABOVE the box without threading a writer through each call site.
+let boxCtl = null;
+
 // Import the rest AFTER onboarding so KEEPERS build with the saved name.
 const { handle } = await import('../src/pharos.js');
 const { prewarmAll } = await import('../src/pharos/prewarm.js');
 const { loadRegistry, saveRegistry, migrateRegistry } = await import('../src/pharos/registry.js');
 const { KEEPERS, applyProfile } = await import('../src/pharos/keepers.js');
-const { tokenLimit } = await import('../src/pharos/tokens.js');
+const { loadOverrides, saveOverride } = await import('../src/pharos/overrides.js');
+const { tokenLimit, contextWindow } = await import('../src/pharos/tokens.js');
+const { askOnce } = await import('../src/pharos/ask.js');
+
+// Pharos's routing call runs on the cheapest model — it's a one-word domain
+// decision, no reason to spend a big model on it. Live only; mock stays offline.
+const ROUTER_MODEL = 'haiku';
+// Routing runs on the cheap model by default; callers (reframe/revoice in pharos.js) can
+// override the model per call so those passes run on the answering Keeper's own model.
+const router = mock ? undefined : (q, o = {}) => askOnce(q, { model: ROUTER_MODEL, ...o });
 
 // Heal stale warm sessions: if the boat config changed since these sessions were
 // created (new persona/cwd/tools), flush them so prewarm re-creates them cleanly
@@ -88,6 +131,10 @@ const { tokenLimit } = await import('../src/pharos/tokens.js');
 }
 
 const roster = KEEPERS.filter((k) => k.active).map((k) => `${C.b}${k.id[0].toUpperCase() + k.id.slice(1)}${C.reset}${C.dim}(${k.alias})${C.reset}`).join('  ');
+
+// Open clean: wipe everything above (the `npm run` preamble, a previous run) and clear
+// scrollback so Alexandria starts at the top of an empty screen. TTY only.
+if (TTY) process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
 
 console.log('');
 console.log(`  ${C.b}${C.gold}Alexandria${C.reset}  ${C.dim}Pharos routes · Keepers hold · Alexandria remembers${C.reset}`);
@@ -100,31 +147,45 @@ console.log('');
 // / when the setting is disabled. Best-effort.
 //
 // The boot animation: light the Pharos. Each Keeper is a lamp that flickers (braille
-// spinner) until its session is established, then locks to a steady ●. They warm in
-// parallel and finish at slightly different times, so the row lights up organically —
-// which is exactly what hides the few seconds of spin-up.
+// spinner) until it lights to a steady ⟡. The reveal is STAGGERED so the row lights up
+// left-to-right EVERY login — even when all Keepers are already warm (a lamp lights on
+// its slot once it's ready; warm ones are ready immediately, cold ones light when
+// prewarm confirms them, which also masks the spin-up). A warmup that fails shows ⚠.
 if (!mock && !noPrewarm && cfg.prewarm) {
   const active = KEEPERS.filter((k) => k.active);
   const reg0 = loadRegistry();
-  const lit = Object.fromEntries(active.map((k) => [k.id, !!(reg0.sessions && reg0.sessions[k.id])]));
   const flames = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
   const label = (k) => k.id[0].toUpperCase() + k.id.slice(1);
+  const lit = Object.fromEntries(active.map((k) => [k.id, false])); // always animate from dark
+  const ready = Object.fromEntries(active.map((k) => [k.id, !!(reg0.sessions && reg0.sessions[k.id])])); // warm = ready now
+  const failed = new Set();
 
   if (TTY) {
     let frame = 0;
+    let slot = 0; // how many lamp-slots have opened (advances slower than the flicker)
+    let warmDone = false;
     const render = () => {
-      const cells = active.map((k) =>
-        lit[k.id]
-          ? `${C.deep}⟡${C.reset} ${C.b}${label(k)}${C.reset}`
-          : `${C.gray}${flames[frame % flames.length]}${C.reset} ${C.dim}${label(k)}${C.reset}`,
-      ).join('   ');
+      const cells = active.map((k) => {
+        if (lit[k.id]) return `${C.deep}⟡${C.reset} ${C.b}${label(k)}${C.reset}`;
+        if (warmDone && failed.has(k.id)) return `${C.red}⚠${C.reset} ${C.dim}${label(k)}${C.reset}`;
+        return `${C.gray}${flames[frame % flames.length]}${C.reset} ${C.dim}${label(k)}${C.reset}`;
+      }).join('   ');
       process.stdout.write(`\r  ${C.dim}lighting the Pharos${C.reset}  ${cells}\x1b[K`);
     };
     process.stdout.write(`\n  ${C.gold}${C.b}✦ Alexandria${C.reset}\n\n`);
-    const timer = setInterval(() => { frame++; render(); }, 80);
-    render();
-    await prewarmAll({ settings: cfg, onResult: (k, ok) => { lit[k.id] = ok || lit[k.id]; render(); } });
-    clearInterval(timer);
+    const warming = prewarmAll({ settings: cfg, onResult: (k, ok) => { ready[k.id] = ok; if (!ok) failed.add(k.id); } })
+      .then(() => { warmDone = true; });
+    await new Promise((res) => {
+      const t = setInterval(() => {
+        frame += 1;
+        if (frame % 2 === 0) slot += 1; // ~180ms per lamp slot
+        active.forEach((k, i) => { if (!lit[k.id] && slot >= i + 1 && ready[k.id]) lit[k.id] = true; });
+        render();
+        const settled = active.every((k) => lit[k.id] || failed.has(k.id));
+        if (settled && warmDone && slot >= active.length) { clearInterval(t); res(); }
+      }, 90);
+    });
+    await warming;
     render();
     process.stdout.write('\n\n');
   } else {
@@ -135,19 +196,34 @@ if (!mock && !noPrewarm && cfg.prewarm) {
   }
 }
 
-// The per-turn metrics line — token load against the window, lifecycle flags, recall.
+// The full accounting line (shown when /metrics is on). The header already shows the
+// per-turn cost; this adds the breakdown — new input ↑, answer ↓, the cheap replayed
+// context (cache-read), and the TOTAL resident load against the window. A cache MISS
+// (the context re-written from scratch after the ~5-min cache TTL) is flagged, since
+// that's what makes the resident number briefly spike.
 function printMetrics(r) {
-  const lim = tokenLimit();
+  const lim = tokenLimit(); // EARLY compaction trigger
+  const win = cfg.contextWindow || contextWindow(); // the real window (the denominator)
   const ctx = r.contextTokens || 0;
-  const pct = lim ? Math.round((ctx / lim) * 100) : 0;
-  const heat = pct >= 80 ? C.red : pct >= 50 ? C.deep : C.green;
+  const pct = win ? Math.round((ctx / win) * 100) : 0;
+  const fmtK = (n) => (n >= 1000 ? `${(n / 1000).toFixed(0)}k` : `${n}`);
+  // Heat keyed to the FLUSH trigger, not the window: amber as we approach it, red past it.
+  const heat = ctx >= lim ? C.red : ctx >= lim * 0.66 ? C.deep : C.green;
+  const u = r.usage || {};
+  const cacheRead = u.cache_read_input_tokens || 0;
+  const cacheMiss = !r.fresh && cacheRead === 0 && (u.cache_creation_input_tokens || 0) > 0;
   const flags = [
+    cacheMiss && `${C.deep}↻ cache miss (re-cached)${C.reset}`,
     r.compacting && `${C.deep}⟳ compacting${C.reset}`,
     r.degraded && `${C.red}⚠ degraded${C.reset}`,
     r.redone && !r.degraded && `${C.green}reseeded${C.reset}`,
     r.recalled?.length && `${C.dim}recalled ${r.recalled.length}${C.reset}`,
   ].filter(Boolean).join(`${C.dim} · ${C.reset}`);
-  console.log(`  ${C.gray}⊙${C.reset} ${C.dim}ctx${C.reset} ${heat}${ctx.toLocaleString()}${C.reset}${C.dim}/${lim.toLocaleString()} (${pct}%) · ${r.fresh ? 'fresh' : 'warm'}${C.reset}${flags ? `${C.dim} · ${C.reset}${flags}` : ''}`);
+  console.log(
+    `  ${C.gray}⊙${C.reset} ${C.dim}turn${C.reset} ↑${u.input_tokens ?? 0} ↓${u.output_tokens ?? 0}` +
+    `${C.dim} · cached ${cacheRead.toLocaleString()} · ctx${C.reset} ${heat}${fmtK(ctx)}${C.reset}${C.dim}/${fmtK(win)} (${pct}%) · compact @${fmtK(lim)} · ${r.fresh ? 'fresh' : 'warm'}${C.reset}` +
+    `${flags ? `${C.dim} · ${C.reset}${flags}` : ''}`,
+  );
 }
 
 // /settings — view and toggle. `/settings` lists; `/settings <key>` flips a bool;
@@ -155,26 +231,40 @@ function printMetrics(r) {
 // .pharos/settings.json so the next turn's getSettings() picks it up.
 const BOOL_KEYS = ['reframe', 'revoice', 'skipPerms', 'prewarm', 'metrics'];
 const STR_KEYS = ['model', 'sharedTools', 'mcpConfig'];
+const NUM_KEYS = ['contextWindow'];
 const SETTING_HELP = {
-  reframe: 'secretary rewrites your prompt for the Keeper',
-  revoice: 'secretary re-voices the Keeper\'s answer',
+  reframe: 'the Keeper rewrites your prompt into a clean question first',
+  revoice: 'the Keeper re-voices its own answer into one consistent voice',
   skipPerms: 'boats run headless (skip permission prompts)',
   prewarm: 'warm all Keepers on startup',
   metrics: 'show the per-turn metrics line',
   model: 'which model the Keepers run on (e.g. sonnet, opus, haiku)',
   sharedTools: 'extra built-in tools every Keeper can load on demand',
   mcpConfig: 'shared MCP connector config (browser/Gmail/…) for every Keeper',
+  contextWindow: 'model context window shown as the ctx max (e.g. 200000, 1000000)',
 };
 function printSettings() {
   console.log(`  ${C.b}${C.gold}Settings${C.reset}`);
   for (const k of BOOL_KEYS) {
     const on = cfg[k];
-    console.log(`    ${on ? `${C.green}●${C.reset}` : `${C.gray}○${C.reset}`} ${C.b}${k.padEnd(11)}${C.reset} ${C.dim}${(on ? 'on' : 'off').padEnd(4)} ${SETTING_HELP[k]}${C.reset}`);
+    console.log(`    ${on ? `${C.green}●${C.reset}` : `${C.gray}○${C.reset}`} ${C.b}${k.padEnd(13)}${C.reset} ${C.dim}${(on ? 'on' : 'off').padEnd(4)} ${SETTING_HELP[k]}${C.reset}`);
   }
   for (const k of STR_KEYS) {
-    console.log(`    ${C.gray}◦${C.reset} ${C.b}${k.padEnd(11)}${C.reset} ${C.dim}${(cfg[k] || '(none)')}  ${SETTING_HELP[k]}${C.reset}`);
+    console.log(`    ${C.gray}◦${C.reset} ${C.b}${k.padEnd(13)}${C.reset} ${C.dim}${(cfg[k] || '(none)')}  ${SETTING_HELP[k]}${C.reset}`);
+  }
+  for (const k of NUM_KEYS) {
+    console.log(`    ${C.gray}#${C.reset} ${C.b}${k.padEnd(13)}${C.reset} ${C.dim}${cfg[k]}  ${SETTING_HELP[k]}${C.reset}`);
   }
   console.log(`  ${C.gray}/settings <key> to toggle · /settings <key> <value> to set${C.reset}\n`);
+}
+// Settings baked into a warm session at spawn time. Changing one mid-run has NO effect
+// until the Keepers re-warm — so flush their sessions when one of these changes (same as
+// /name does for the persona), otherwise the setting silently "doesn't work".
+const SPAWN_KEYS = ['model', 'sharedTools', 'mcpConfig', 'skipPerms'];
+function flushWarmSessions() {
+  const reg = loadRegistry(registryPath);
+  reg.sessions = {};
+  saveRegistry(reg, registryPath);
 }
 function changeSettings(args) {
   const [key, ...rest] = args;
@@ -183,14 +273,140 @@ function changeSettings(args) {
     const val = rest.length ? /^(1|true|on|yes)$/i.test(rest[0]) : !cfg[key];
     cfg = saveSettings({ [key]: val });
     if (key === 'metrics') showMetrics = val;
-    console.log(`  ${C.green}✓${C.reset} ${key} ${val ? `${C.green}on` : 'off'}${C.reset}\n`);
+    if (SPAWN_KEYS.includes(key)) flushWarmSessions();
+    console.log(`  ${C.green}✓${C.reset} ${key} ${val ? `${C.green}on` : 'off'}${C.reset}${SPAWN_KEYS.includes(key) ? `${C.dim} — Keepers will re-warm${C.reset}` : ''}\n`);
   } else if (STR_KEYS.includes(key)) {
     const val = rest.join(' ');
     cfg = saveSettings({ [key]: val });
-    console.log(`  ${C.green}✓${C.reset} ${key} = ${C.gold}${val || '(none)'}${C.reset}\n`);
+    if (SPAWN_KEYS.includes(key)) flushWarmSessions();
+    console.log(`  ${C.green}✓${C.reset} ${key} = ${C.gold}${val || '(none)'}${C.reset}${SPAWN_KEYS.includes(key) ? `${C.dim} — Keepers will re-warm${C.reset}` : ''}\n`);
+  } else if (NUM_KEYS.includes(key)) {
+    const n = Number(String(rest[0]).replace(/[_,k]/gi, (m) => (m.toLowerCase() === 'k' ? '000' : '')));
+    if (!Number.isFinite(n) || n <= 0) {
+      console.log(`  ${C.red}${key} needs a positive number${C.reset} ${C.dim}(e.g. /settings ${key} 200000)${C.reset}\n`);
+    } else {
+      cfg = saveSettings({ [key]: n });
+      console.log(`  ${C.green}✓${C.reset} ${key} = ${C.gold}${n.toLocaleString()}${C.reset}\n`);
+    }
   } else {
-    console.log(`  ${C.red}unknown setting${C.reset} ${C.dim}'${key}' — try one of: ${[...BOOL_KEYS, ...STR_KEYS].join(', ')}${C.reset}\n`);
+    console.log(`  ${C.red}unknown setting${C.reset} ${C.dim}'${key}' — try one of: ${[...BOOL_KEYS, ...STR_KEYS, ...NUM_KEYS].join(', ')}${C.reset}\n`);
   }
+}
+
+// ---- interactive /settings menu (TTY box only) ----
+// The reducer (menu.js) owns navigation; these own the DATA and COPY. buildMenuView
+// snapshots current state into the rows the reducer reads; applyMenuIntent is the only
+// writer (mirrors changeSettings, no console noise — the menu shows state live);
+// menuLines renders the content rows the box frames. The keyboard capture lives in
+// startBox. Mirrors how boxui.js (math) and bin (draw) split the input box.
+const padTo = (s, n) => s + ' '.repeat(Math.max(0, n - s.length));
+const modelLabel = (m) => (m || '(default)');
+const toolList = () => (cfg.sharedTools || '').split(',').map((s) => s.trim()).filter(Boolean);
+// What each shared tool is — the powerful (file/shell) ones flagged so sharing them to
+// EVERY Keeper is a conscious choice.
+const TOOL_HELP = {
+  WebSearch: 'search the web', WebFetch: 'fetch & read a URL', Read: 'read a file you reference',
+  Grep: 'search file contents', Glob: 'find files by pattern', TodoWrite: 'keep a task list',
+  Bash: 'run shell commands ⚠ powerful', Write: 'create files ⚠ powerful', Edit: 'modify files ⚠ powerful',
+};
+
+function buildMenuView() {
+  const main = SETTINGS_SCHEMA.map(({ key, kind, screen }) => ({
+    key,
+    kind,
+    screen,
+    label: key,
+    display:
+      key === 'model' ? 'per-Keeper ›'
+      : key === 'sharedTools' ? `${toolList().length} on ›`
+      : kind === 'bool' ? (cfg[key] ? 'on' : 'off')
+      : kind === 'num' ? Number(cfg[key]).toLocaleString()
+      : (cfg[key] || '(none)'),
+  }));
+  const ov = loadOverrides();
+  const model = [
+    { id: '*', label: 'all Keepers', model: cfg.model || '', effective: cfg.model || '(CLI default)' },
+    ...KEEPERS.filter((k) => k.active).map((k) => {
+      const m = (ov[k.id] || {}).model || '';
+      return { id: k.id, label: k.alias, model: m, effective: m || `default (${cfg.model || 'CLI'})` };
+    }),
+  ];
+  const on = new Set(toolList());
+  const tools = SHARED_TOOL_CHOICES.map((name) => ({ name, on: on.has(name) }));
+  return { main, model, tools };
+}
+
+function applyMenuIntent(it) {
+  if (it.type === 'toggle') {
+    cfg = saveSettings({ [it.key]: !cfg[it.key] });
+    if (it.key === 'metrics') showMetrics = cfg.metrics;
+    if (SPAWN_KEYS.includes(it.key)) flushWarmSessions();
+  } else if (it.type === 'set') {
+    if (it.kind === 'num') {
+      const n = Number(String(it.value).replace(/[_,k]/gi, (m) => (m.toLowerCase() === 'k' ? '000' : '')));
+      if (Number.isFinite(n) && n > 0) cfg = saveSettings({ [it.key]: n }); // ignore junk → keep old value
+    } else {
+      cfg = saveSettings({ [it.key]: it.value });
+      if (SPAWN_KEYS.includes(it.key)) flushWarmSessions();
+    }
+  } else if (it.type === 'setModel') {
+    if (it.id === '*') cfg = saveSettings({ model: it.value }); // the global default
+    else { saveOverride(it.id, { model: it.value }); applyProfile(); } // per-Keeper, re-applied live
+    flushWarmSessions(); // model is baked at spawn → re-warm so it takes effect
+  } else if (it.type === 'toggleTool') {
+    const set = new Set(toolList());
+    if (set.has(it.name)) set.delete(it.name); else set.add(it.name);
+    cfg = saveSettings({ sharedTools: [...set].join(',') });
+    flushWarmSessions(); // sharedTools is baked at spawn → re-warm
+  }
+}
+
+function menuLines(state, view) {
+  const lines = [];
+  if (state.screen === 'model') {
+    lines.push(`  ${C.b}${C.gold}⚙ Settings ${C.dim}›${C.reset}${C.b}${C.gold} model${C.reset}   ${C.dim}↑↓ keeper · ←→ model · enter/esc back${C.reset}`);
+    view.model.forEach((row, i) => {
+      const sel = i === state.cursor;
+      const mark = sel ? `${C.gold}▸${C.reset}` : ' ';
+      const label = sel ? `${C.b}${C.gold}${padTo(row.label, 12)}${C.reset}` : `${C.dim}${padTo(row.label, 12)}${C.reset}`;
+      const m = modelLabel(row.model);
+      const val = sel ? `${C.gold}‹ ${m} ›${C.reset}` : `${C.sand}${m}${C.reset}`;
+      const eff = row.id !== '*' && !row.model ? ` ${C.dim}→ ${row.effective}${C.reset}` : '';
+      lines.push(`  ${mark} ${label} ${val}${eff}`);
+    });
+    return lines;
+  }
+  if (state.screen === 'tools') {
+    lines.push(`  ${C.b}${C.gold}⚙ Settings ${C.dim}›${C.reset}${C.b}${C.gold} shared tools${C.reset}   ${C.dim}↑↓ move · enter toggle · esc back${C.reset}`);
+    view.tools.forEach((row, i) => {
+      const sel = i === state.cursor;
+      const mark = sel ? `${C.gold}▸${C.reset}` : ' ';
+      const box = row.on ? `${C.green}●${C.reset}` : `${C.gray}○${C.reset}`;
+      const name = sel ? `${C.b}${C.gold}${padTo(row.name, 11)}${C.reset}` : `${padTo(row.name, 11)}`;
+      lines.push(`  ${mark} ${box} ${name} ${C.dim}${TOOL_HELP[row.name] || ''}${C.reset}`);
+    });
+    return lines;
+  }
+  // main
+  lines.push(`  ${C.b}${C.gold}⚙ Settings${C.reset}   ${C.dim}↑↓ move · enter select · esc close${C.reset}`);
+  view.main.forEach((row, i) => {
+    const sel = i === state.cursor;
+    const mark = sel ? `${C.gold}▸${C.reset}` : ' ';
+    const label = sel ? `${C.b}${C.gold}${padTo(row.label, 14)}${C.reset}` : `${C.dim}${padTo(row.label, 14)}${C.reset}`;
+    let val;
+    if (sel && state.edit) {
+      const was = row.kind === 'num' ? Number(cfg[row.key]).toLocaleString() : (cfg[row.key] || 'none');
+      val = `${C.gold}${state.edit.buf}▏${C.reset} ${C.dim}(was ${was} · enter save · esc cancel)${C.reset}`;
+    } else if (row.kind === 'bool') {
+      val = cfg[row.key] ? `${C.green}● on${C.reset}` : `${C.gray}○ off${C.reset}`;
+    } else {
+      val = `${C.sand}${row.display}${C.reset}`;
+    }
+    lines.push(`  ${mark} ${label} ${val}`);
+  });
+  const help = SETTING_HELP[view.main[state.cursor].key] || '';
+  lines.push(`  ${C.dim}${help}${C.reset}`);
+  return lines;
 }
 
 // /reset — wipe all operator state (.pharos: profile, settings, overrides, registry,
@@ -237,12 +453,23 @@ function printStatus() {
   console.log('');
 }
 
-// ---- the input: plain readline. A hand-rolled raw-mode box proved too fragile across
-// terminals (it staircased / mis-placed the cursor); a true Claude-Code box needs a TUI
-// library like Ink. This is one persistent interface with a clean ⟡ prompt — reliable
-// everywhere, including piped/non-TTY. ----
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-const PROMPT = TTY ? `  ${C.gold}⟡${C.reset} ${C.deep}›${C.reset} ` : "alexandria› ";
+// ---- the input ----
+// TTY: a pinned input box at the bottom. A terminal scroll region (DECSTBM) reserves
+// the bottom 3 rows for the box; answers scroll in the region ABOVE it, the box stays
+// put. Output uses the bottom-anchored scroll idiom (write at the last region row, LF
+// to scroll, reprint) — nothing depends on a saved absolute cursor, so it never
+// staircases the way the old ESC-7/8 box did. The cursor math is in src/pharos/boxui.js
+// (unit-tested). Non-TTY (pipes / tests) keeps plain readline below.
+const PROMPT = TTY ? `  ${C.gold}⟡${C.reset} ${C.deep}›${C.reset} ` : 'alexandria› ';
+let rlNonTty = null; // the non-TTY readline (created only on the non-TTY path)
+
+// A one-off sub-prompt (e.g. /name). The pinned box has a single always-live input (no
+// nested prompts), so there it returns null and the caller falls back to inline usage
+// (`/name <name>`); the non-TTY path uses readline's question().
+function subAsk(promptStr) {
+  if (boxCtl) return Promise.resolve(null);
+  return ask(rlNonTty, promptStr);
+}
 
 // Handle one submitted line. Returns false to quit the loop, true to keep going.
 async function handleLine(line) {
@@ -261,13 +488,14 @@ async function handleLine(line) {
   }
   if (p === '/settings' || p.startsWith('/settings ')) {
     const args = p.split(/\s+/).slice(1);
-    if (args.length) changeSettings(args);
+    if (args.length) changeSettings(args); // scriptable text path (also the non-TTY route)
+    else if (boxCtl && boxCtl.openMenu) await boxCtl.openMenu(); // interactive arrow-key menu
     else printSettings();
     return true;
   }
   if (p === '/name' || p.startsWith('/name ')) {
     let nm = p.slice(5).trim();
-    if (!nm) nm = (await ask(rl, `  ${C.gold}new name${C.reset} ${C.deep}›${C.reset} `)).trim();
+    if (!nm) nm = ((await subAsk(`  ${C.gold}new name${C.reset} ${C.deep}›${C.reset} `)) || '').trim();
     if (nm) {
       const saved = saveProfile({ name: nm });
       profile.name = saved.name;
@@ -277,53 +505,283 @@ async function handleLine(line) {
       saveRegistry(reg, registryPath);
       console.log(`  ${C.green}✓${C.reset} name set to ${C.b}${saved.name}${C.reset} ${C.dim}— Keepers updated; they re-warm on next use${C.reset}\n`);
     } else {
-      console.log(`  ${C.dim}name unchanged${C.reset}\n`);
+      console.log(`  ${C.dim}use ${C.gold}/name <name>${C.reset}${C.dim} to set what your Keepers call you${C.reset}\n`);
     }
     return true;
   }
 
   // A question → route it to a Keeper.
   const t0 = Date.now();
-  const spin = thinking('thinking');
-  const r = await handle(p, { mock, registryPath });
+  const spin = boxCtl ? boxCtl.spinner('thinking') : thinking('thinking');
+  const r = await handle(p, { mock, registryPath, ask: router });
   spin.stop();
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   const arrow = r.switched ? `${C.gold}↪${C.reset}` : `${C.gray}·${C.reset}`;
   const recall = r.recalled?.length ? ` ${C.dim}· recalled ${r.recalled.length}${C.reset}` : '';
   const flush = r.redone ? (r.degraded ? ` ${C.red}· ⚠ degraded${C.reset}` : ` ${C.green}· reseeded${C.reset}`) : '';
   const early = r.compacting ? ` ${C.deep}· ⟳ pre-compacted${C.reset}` : '';
-  // Header ABOVE the answer: who answered + how long it took + how loaded the thread is.
-  // (The live elapsed time shows DURING the turn via the spinner above; the token count
-  // is only known once the boat returns, so it lands here.)
-  const ctx = r.contextTokens || 0;
-  const tok = ctx >= 1000 ? `${(ctx / 1000).toFixed(1)}k` : `${ctx}`;
-  const meter = `  ${C.gray}⧖ ${secs}s${ctx ? ` ${C.dim}·${C.gray} ◈ ${tok} tokens` : ''}${C.reset}`;
+  // Header ABOVE the answer: who answered, how long it took, and the PER-TURN token cost
+  // (new input + the answer) — the marginal cost of THIS question, not the resident
+  // context. (The whole-thread load lives in the /metrics line.) So "hi" reads ~17 tok,
+  // not the 20k+ of replayed context that was confusing here before.
+  const u = r.usage || {};
+  const turnTok = r.turnTokens || ((u.input_tokens || 0) + (u.output_tokens || 0));
+  const tok = turnTok >= 1000 ? `${(turnTok / 1000).toFixed(1)}k` : `${turnTok}`;
+  const meter = `  ${C.gray}⧖ ${secs}s${turnTok ? ` ${C.dim}·${C.gray} ◈ ${tok} tok` : ''}${C.reset}`;
   console.log(`  ${arrow} ${C.b}${r.routed}${C.reset} ${C.dim}(${r.alias})${C.reset} ${C.gray}${r.note}${r.fresh ? ' · new' : ''}${C.reset}${recall}${flush}${early}${meter}`);
   if (showMetrics) printMetrics(r);
   console.log('');
   console.log(r.text.split('\n').map((l) => `  ${l}`).join('\n')); // answer under a soft left gutter
   console.log('');
+  // Update the persistent bottom-border HUD: current Keeper + TOTAL context against the
+  // real context WINDOW (not the flush trigger — that was the confusing 150k "max").
+  if (boxCtl) {
+    const ctxTotal = r.contextTokens || 0;
+    const win = cfg.contextWindow || contextWindow();
+    const pctCtx = win ? Math.round((ctxTotal / win) * 100) : 0;
+    const fmt = (n) => (n >= 1000 ? `${(n / 1000).toFixed(0)}k` : `${n}`);
+    boxCtl.setStatus(`${r.routed} · ctx ${fmt(ctxTotal)}/${fmt(win)} (${pctCtx}%)`);
+  }
   return true;
 }
 
-function showPrompt() { rl.setPrompt(PROMPT); rl.prompt(); }
+// ---- the input box (TTY) — an ALWAYS-LIVE raw-mode line editor. It owns the keyboard
+// for the whole session (not just per-prompt), so you can keep typing WHILE a Keeper
+// thinks: each Enter drops the line into a queue that's answered one-at-a-time (turns
+// never overlap). The box floats just under the content and the conversation fills the
+// screen from the top down, then scrolls up once full — no dead whitespace. All cursor
+// math is width-aware (boxui.js) so the ⟡ marker's colour codes never shift the column.
+async function startBox() {
+  const stdin = process.stdin;
+  const out0 = process.stdout;
+  const GUTTER = 2; // continuation lines wrap flush-left at the 2-col gutter (under the marker)
+  let boxH = 3; // dynamic: 1 top rule + N wrapped input rows + 1 bottom border
+  let L = layout(out0.rows, boxH);
+  const cols = () => out0.columns || 80;
+  const w = (s) => out0.write(s);
+  const bar = () => `  ${C.bronze}${rule()}${C.reset}`;
 
-// Serialize turns through a queue. Piped input (tests/mock) emits all its 'line'
-// events up front, so we must process them strictly one-at-a-time and finish the
-// in-flight turn before a later '/exit' can close — otherwise the turn is dropped.
-const queue = [];
-let processing = false;
-let closing = false;
-async function drain() {
-  if (processing) return;
-  processing = true;
-  while (queue.length && !closing) {
-    const keep = await handleLine(queue.shift());
-    if (!keep) { closing = true; rl.close(); }
+  let buf = '';
+  let curIdx = 0;
+  const prefix = PROMPT;
+  let status = ''; // persistent HUD on the box's bottom border (Keeper + total context)
+  let spinning = false; // a thinking line is reserved on the row just above the box
+  let menu = null; // menu.js reducer state while the /settings menu owns the keyboard
+  let menuView = null; // row snapshot the reducer reads; rebuilt after each write
+  let menuResolve = null; // resolves the openMenu() promise on close (unpauses the drain loop)
+
+  // Wrap the current input across as many rows as it needs (long input flows to the next
+  // line instead of scrolling sideways), and keep boxH/L in sync with that height.
+  const measure = () => wrapInput(buf, curIdx, visLen(prefix), GUTTER, cols());
+  // Box height = top rule + content rows + bottom border. Content is the menu when open,
+  // otherwise the (wrapped) input line.
+  const sync = () => { boxH = (menu ? menuLines(menu, menuView).length : measure().rows.length) + 2; L = layout(out0.rows, boxH); };
+
+  const botBorder = () => {
+    if (!status) return bar();
+    const stat = `${C.dim}${status}${C.reset}`;
+    const rail = Math.max(2, W() - visLen(stat) - 3);
+    return `  ${C.bronze}${'─'.repeat(rail)}${C.reset} ${stat} ${C.bronze}─${C.reset}`;
+  };
+
+  // The box is PINNED at the bottom. The transcript scrolls in a region ABOVE it, and
+  // when a Keeper is thinking one extra row above the box is reserved for the spinner and
+  // EXCLUDED from the scroll region — so streamed output (echoes, answers) can never land
+  // on the spinner's row. This is what stops queued prompts from being overwritten.
+  const boxTopRow = () => out0.rows - boxH + 1;
+  const contentBottom = () => Math.max(1, boxTopRow() - 1 - (spinning ? 1 : 0)); // last scrolling row
+  const spinnerRow = () => boxTopRow() - 1;
+  const setRegion = () => w(`\x1b[1;${contentBottom()}r`);
+  const placeCursor = () => { const m = measure(); w(`\x1b[${boxTopRow() + 1 + m.cursorRow};${m.cursorCol + 1}H`); };
+
+  const drawBox = () => {
+    sync();
+    setRegion(); // region matched to box height (+ spinner row when thinking)
+    const top = boxTopRow();
+    w(`\x1b[${top};1H\x1b[2K${bar()}`);
+    if (menu) {
+      const ls = menuLines(menu, menuView);
+      ls.forEach((line, idx) => w(`\x1b[${top + 1 + idx};1H\x1b[2K${line}`));
+      w(`\x1b[${top + 1 + ls.length};1H\x1b[2K${botBorder()}`);
+      w(`\x1b[${top + 1 + ls.length};1H`); // park cursor on the border (no input caret in menu)
+      return;
+    }
+    const m = measure();
+    m.rows.forEach((line, idx) => {
+      const lead = idx === 0 ? prefix : ' '.repeat(GUTTER); // marker on row 0; flush-left after
+      w(`\x1b[${top + 1 + idx};1H\x1b[2K${lead}${line}`);
+    });
+    w(`\x1b[${top + 1 + m.rows.length};1H\x1b[2K${botBorder()}`);
+    w(`\x1b[${top + 1 + m.cursorRow};${m.cursorCol + 1}H`);
+  };
+  const setStatus = (s) => { status = s; drawBox(); };
+
+  // Print into the scrolling transcript above the box. Natural scroll idiom: each line
+  // scrolls the region up by one and prints at its bottom — so every echo and answer is
+  // permanent and scrolls up in order (multiple queued prompts all stay visible).
+  const out = (s = '') => {
+    sync();
+    const bottom = contentBottom();
+    w(`\x1b[1;${bottom}r`);
+    for (const ln of String(s).split('\n')) {
+      w(`\x1b[${bottom};1H\n`);
+      w(`\x1b[${bottom};1H\x1b[2K${ln}`);
+    }
+    drawBox();
+  };
+
+  // The thinking line — a rotating GOLD verb + elapsed seconds: `⠋ Divining… (4s · …)`.
+  // On its own reserved row just above the box; cursor returns to the input each frame so
+  // you can keep typing while it spins.
+  const spinner = (label = 'thinking') => {
+    const frames = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
+    const t0 = Date.now();
+    const seed = Math.floor(Math.random() * VERBS.length);
+    let i = 0;
+    spinning = true;
+    drawBox(); // reserve the spinner row (shrinks the scroll region by one)
+    const paint = () => {
+      const el = Date.now() - t0;
+      w(`\x1b[${spinnerRow()};1H\x1b[2K  ${C.gray}${frames[i = (i + 1) % frames.length]}${C.reset} ${C.b}${C.gold}${verbAt(el, seed)}…${C.reset} ${C.dim}(${Math.floor(el / 1000)}s · ${label})${C.reset}`);
+      placeCursor();
+    };
+    paint();
+    const timer = setInterval(paint, 80);
+    return { stop() { clearInterval(timer); w(`\x1b[${spinnerRow()};1H\x1b[2K`); spinning = false; drawBox(); } };
+  };
+
+  const onResize = () => { drawBox(); };
+  const teardown = () => {
+    w('\x1b[r'); // release the scroll region
+    const top = boxTopRow();
+    for (let k = -1; k < boxH; k += 1) w(`\x1b[${top + k};1H\x1b[2K`); // clear spinner row + box rows
+    w(`\x1b[${top};1H\x1b[?25h`);
+    out0.removeListener('resize', onResize);
+    if (stdin.setRawMode) stdin.setRawMode(false);
+  };
+
+  // ---- the queue: submitted lines answered one-at-a-time, never overlapping ----
+  const queue = [];
+  let processing = false;
+  let closing = false;
+  let resolveLoop;
+  const loopDone = new Promise((r) => { resolveLoop = r; });
+  const finish = () => { if (!closing) { closing = true; resolveLoop(); } };
+
+  async function drain() {
+    if (processing) return;
+    processing = true;
+    while (queue.length && !closing) {
+      const keep = await handleLine(queue.shift());
+      if (keep === false) { finish(); break; }
+    }
+    processing = false;
   }
-  processing = false;
-  if (!closing) showPrompt();
+
+  // Enter → the line leaves the box at once (echoed into the transcript) and joins the
+  // queue; the box clears so you can immediately type the next one.
+  const submit = (line) => {
+    buf = ''; curIdx = 0; drawBox();
+    const p = (line || '').trim();
+    if (p) out(`  ${C.deep}⟡${C.reset} ${C.sand}${p}${C.reset}`); // echo into the transcript
+    if (!p) return;
+    queue.push(line);
+    drain();
+  };
+
+  // Open the interactive /settings menu: take over the keyboard and return a promise that
+  // resolves on close, so the calling turn (handleLine) awaits — the drain loop pauses,
+  // no new turns process while the menu is up.
+  const openMenu = () => new Promise((res) => {
+    menu = initMenu();
+    menuView = buildMenuView();
+    menuResolve = res;
+    drawBox();
+  });
+
+  // Drive one keypress through the reducer while the menu owns the keyboard. Apply any
+  // emitted intents (the only writers), re-snapshot the view to reflect them, redraw.
+  const onMenuKey = (str, key) => {
+    const r = menuKey(menu, { ...key, str }, menuView);
+    for (const it of r.intents) applyMenuIntent(it);
+    if (r.intents.length) menuView = buildMenuView();
+    menu = r.state;
+    if (r.close) {
+      const top0 = boxTopRow(); const h = boxH; // the taller menu box's footprint
+      menu = null; menuView = null;
+      for (let i = -1; i <= h; i += 1) w(`\x1b[${top0 + i};1H\x1b[2K`); // wipe its band before the input box shrinks back in
+      const res = menuResolve; menuResolve = null;
+      drawBox();
+      if (res) res();
+      return;
+    }
+    drawBox();
+  };
+
+  const onKey = (str, key) => {
+    key = key || {};
+    if (menu) return onMenuKey(str, key); // menu owns the keyboard while open
+    if (key.ctrl && key.name === 'c') return finish();
+    if (key.ctrl && key.name === 'd') return buf.length ? null : finish();
+    if (key.name === 'return' || key.name === 'enter') return submit(buf);
+    if (key.name === 'backspace') { if (curIdx > 0) { buf = buf.slice(0, curIdx - 1) + buf.slice(curIdx); curIdx -= 1; } return drawBox(); }
+    if (key.ctrl && key.name === 'u') { buf = buf.slice(curIdx); curIdx = 0; return drawBox(); }
+    if (key.ctrl && key.name === 'a') { curIdx = 0; return drawBox(); }
+    if (key.ctrl && key.name === 'e') { curIdx = buf.length; return drawBox(); }
+    if (key.name === 'left') { if (curIdx > 0) curIdx -= 1; return drawBox(); }
+    if (key.name === 'right') { if (curIdx < buf.length) curIdx += 1; return drawBox(); }
+    if (key.name === 'home') { curIdx = 0; return drawBox(); }
+    if (key.name === 'end') { curIdx = buf.length; return drawBox(); }
+    if (str && !key.ctrl && !key.meta && str >= ' ') { buf = buf.slice(0, curIdx) + str + buf.slice(curIdx); curIdx += str.length; return drawBox(); } // printable (incl. paste)
+  };
+
+  // Pin the box at the bottom and open the scroll region above it. The boot screen stays
+  // on view and scrolls up into history naturally as the conversation grows.
+  if (stdin.setRawMode) stdin.setRawMode(true);
+  stdin.resume();
+  sync();
+  setRegion();
+
+  boxCtl = { out, spinner, redraw: drawBox, setStatus, teardown, openMenu };
+  const origLog = console.log;
+  console.log = (...a) => out(a.map((x) => (typeof x === 'string' ? x : String(x))).join(' '));
+  out0.on('resize', onResize);
+  process.on('exit', () => { try { console.log = origLog; teardown(); } catch { /* noop */ } });
+
+  readline.emitKeypressEvents(stdin);
+  stdin.on('keypress', onKey);
+  drawBox();
+
+  await loopDone;
+  stdin.removeListener('keypress', onKey);
+  console.log = origLog;
+  teardown();
+  origLog(`  ${C.dim}— Alexandria out.${C.reset}`);
+  process.exit(0);
 }
-showPrompt();
-rl.on('line', (line) => { queue.push(line); drain(); });
-rl.on('close', () => { console.log(`  ${C.dim}— Alexandria out.${C.reset}`); process.exit(0); });
+
+if (TTY) {
+  await startBox();
+} else {
+  // Non-TTY (pipes / tests): plain readline. Serialize turns through a queue — piped
+  // input emits all its 'line' events up front, so we process strictly one-at-a-time
+  // and finish the in-flight turn before a later '/exit' closes (else the turn drops).
+  rlNonTty = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const showPrompt = () => { rlNonTty.setPrompt(PROMPT); rlNonTty.prompt(); };
+  const queue = [];
+  let processing = false;
+  let closing = false;
+  const drain = async () => {
+    if (processing) return;
+    processing = true;
+    while (queue.length && !closing) {
+      const keep = await handleLine(queue.shift());
+      if (!keep) { closing = true; rlNonTty.close(); }
+    }
+    processing = false;
+    if (!closing) showPrompt();
+  };
+  showPrompt();
+  rlNonTty.on('line', (line) => { queue.push(line); drain(); });
+  rlNonTty.on('close', () => { console.log(`  ${C.dim}— Alexandria out.${C.reset}`); process.exit(0); });
+}

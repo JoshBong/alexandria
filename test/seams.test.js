@@ -1,6 +1,6 @@
-// Tests for the secretary layer: settings resolution, the reframe (forward) and
-// revoice (return) LLM seams (mock runner — no subprocess), and their Pharos
-// integration + fail-soft behavior.
+// Tests for the optional LLM seams: settings resolution, the reframe (forward) and
+// revoice (return) passes (mock runner — no subprocess), and their Pharos integration
+// + fail-soft behavior. (reframe/revoice run on the routed Keeper's model now.)
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

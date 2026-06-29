@@ -7,7 +7,9 @@
 //   {
 //     "<keeperId>": {
 //       "terms":          { "<term>": <weight>, ... },   // merged onto base terms
-//       "personaContext": "one or two sentences of standing context for this domain"
+//       "personaContext": "one or two sentences of standing context for this domain",
+//       "model":          "<alias>"   // per-Keeper model override; '' / absent = follow
+//                                     // the global `model` setting (see settings.js)
 //     },
 //     ...
 //   }
@@ -29,4 +31,16 @@ export function loadOverrides({ path: p } = {}) {
   } catch {
     return {}; // absent / unreadable → generic registry only
   }
+}
+
+// Merge a partial override for one Keeper into .pharos/keepers.local.json (creating the
+// file on first write). Mirrors saveSettings/saveProfile. Returns the full overrides map
+// after the write so callers can re-apply in place (buildKeepers/applyProfile).
+export function saveOverride(keeperId, patch, { path: p } = {}) {
+  const target = p || overridesPath();
+  const cur = loadOverrides({ path: target });
+  const next = { ...cur, [keeperId]: { ...(cur[keeperId] || {}), ...patch } };
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, JSON.stringify(next, null, 2) + '\n');
+  return next;
 }

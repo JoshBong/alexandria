@@ -1,6 +1,6 @@
 // Tests for the Phase 2 memory seam: the open-ended folder adapter, the ark
 // adapter (mocked subprocess), the createStore factory, the shouldRecall
-// miss-policy, the secretary's composeTurn prompt-writer, and the recall wiring in
+// miss-policy, Pharos's composeTurn prompt-writer, and the recall wiring in
 // Pharos. Written via the test-keeper tool. No network, no API, no real ark — the
 // ark adapter's subprocess runner is injected; folder tests use a temp dir.
 
@@ -147,7 +147,7 @@ test('shouldRecall: intake is always a miss', () => {
   assert.equal(shouldRecall({ routed: 'anubis', reason: 'argmax' }, warm), true);
 });
 
-// ---- composeTurn (the secretary's prompt-writer) ----
+// ---- composeTurn (Pharos's prompt-writer) ----
 
 test('composeTurn: no recall → prompt passes through verbatim', () => {
   assert.equal(composeTurn({ prompt: 'ship it', recalled: [] }), 'ship it');

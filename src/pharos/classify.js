@@ -80,3 +80,36 @@ export function classify(prompt, opts = {}) {
   const keeper = KEEPERS.find((k) => k.id === routed) || {};
   return { routed, alias: keeper.alias || routed, top: topId, topScore, margin, reason, scores };
 }
+
+// LLM routing — Pharos READS the message and picks a domain, the way a person
+// (or any model) trivially would. This is the real classifier in live mode; the keyword
+// scorer above is the offline/mock path AND the safety net if the model call fails.
+// `run(prompt)` is an injected one-shot LLM call (handle passes askOnce); tests inject a
+// fake. Returns the same shape as classify() so handle()/shouldRecall() are unchanged.
+export function makeLLMClassifier({ run, keepers = KEEPERS, fallback = classify } = {}) {
+  const active = keepers.filter((k) => k.active);
+  const menu = active.map((k) => `- ${k.id}: ${k.alias}${k.note ? ` — ${k.note}` : ''}`).join('\n');
+  const ids = active.map((k) => k.id);
+  const idRe = new RegExp(`\\b(${ids.join('|')})\\b`);
+  return async function classifyLLM(prompt, opts = {}) {
+    const cur = opts.currentKeeper;
+    const instr =
+      `Route the user's message to exactly ONE domain Keeper:\n${menu}\n\n` +
+      (cur
+        ? `The user is currently talking to "${cur}". If the message is a short follow-up that continues that same domain, keep it there; otherwise route by topic.\n`
+        : '') +
+      `Reply with ONLY the Keeper id (one lowercase word), nothing else.\n\nMessage: ${prompt}`;
+    let raw = '';
+    try {
+      raw = await run(instr, opts);
+    } catch {
+      raw = '';
+    }
+    const m = String(raw).toLowerCase().match(idRe);
+    if (m) {
+      const k = active.find((x) => x.id === m[1]) || {};
+      return { routed: m[1], alias: k.alias || m[1], top: m[1], topScore: null, margin: null, reason: 'llm', scores: {} };
+    }
+    return fallback(prompt, opts); // unreachable / unparseable model reply → keyword safety net
+  };
+}

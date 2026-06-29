@@ -1,7 +1,7 @@
 // The canary — Alexandria's OWN freshness marker (no ark dependency, forkable).
 //
 // Each Keeper is instructed (via its persona) to end every reply with this marker.
-// The stateless secretary then free-string-checks for it on the way back: present =
+// Pharos (stateless) then free-string-checks for it on the way back: present =
 // the Keeper's context is still coherent; missing = instruction-following has
 // dropped, which is the late-but-reliable signal that the warm thread is degraded
 // and should be flushed + reseeded (see pharos.js handle()).

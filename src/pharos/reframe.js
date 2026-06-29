@@ -1,12 +1,12 @@
-// The secretary's optional LLM seams — both off by default, each costs +1 cheap
-// `claude` call per turn, both fail SOFT (any failure → return the original text,
-// never break the turn).
+// The Keeper's optional LLM seams — both off by default, each costs +1 `claude` call
+// per turn (run on the Keeper's own model — see pharos.js keeperAsk), both fail SOFT
+// (any failure → return the original text, never break the turn).
 //
 //   reframe  (forward) — rewrite the user's terse prompt into one clean, self-
-//            contained question for the routed Keeper, resolving shorthand using
-//            recalled memory. The secretary "states the question properly."
+//            contained question, resolving shorthand using recalled memory, before the
+//            Keeper answers. "States the question properly" first.
 //   revoice  (return)  — re-deliver the Keeper's raw answer in one consistent
-//            Alexandria voice, preserving every fact/number exactly.
+//            voice, preserving every fact/number exactly.
 //
 // Both take an injectable `run(system, user) -> string|null` so tests run with a
 // mock and no subprocess. The default `askClaude` is a minimal, tool-less,
@@ -43,10 +43,10 @@ export function makeReframeComposer({ run = askClaude } = {}) {
         '\n\n'
       : '';
     const system =
-      `You are Alexandria's secretary. Rewrite the user's request into ONE clear, ` +
-      `self-contained question for the ${alias || 'specialist'} specialist. Resolve ` +
-      `pronouns and shorthand using the context if present, keep the user's intent and ` +
-      `scope exactly, add no new facts or assumptions, and output ONLY the rewritten question.`;
+      `You are the ${alias || 'specialist'} Keeper of Alexandria. Rewrite the user's request ` +
+      `into ONE clear, self-contained question you will then answer. Resolve pronouns and ` +
+      `shorthand using the context if present, keep the user's intent and scope exactly, ` +
+      `add no new facts or assumptions, and output ONLY the rewritten question.`;
     const out = await run(system, `${ctx}User request: ${prompt}`);
     return out && out.trim() ? out.trim() : prompt; // fail-soft: original prompt
   };
@@ -55,9 +55,9 @@ export function makeReframeComposer({ run = askClaude } = {}) {
 export async function revoiceAnswer({ answer, prompt } = {}, { run = askClaude } = {}) {
   if (!answer || !answer.trim()) return answer;
   const system =
-    `You are Alexandria's secretary delivering a specialist's answer to the user in one ` +
-    `consistent voice — concise, direct, helpful. Preserve every fact, number, and ` +
-    `recommendation exactly; add nothing new; only smooth the voice. Output ONLY the answer.`;
+    `You are a Keeper of Alexandria delivering your answer to the user in one consistent ` +
+    `voice — concise, direct, helpful. Preserve every fact, number, and recommendation ` +
+    `exactly; add nothing new; only smooth the voice. Output ONLY the answer.`;
   const out = await run(system, `User asked: ${prompt}\n\nSpecialist's answer:\n${answer}`);
   return out && out.trim() ? out.trim() : answer; // fail-soft: original answer
 }

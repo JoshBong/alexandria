@@ -28,6 +28,16 @@ export function tokenLimit(env = process.env) {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_LIMIT;
 }
 
+// The model's actual context window — the real "max" a UI should show as the
+// denominator. tokenLimit (above) is our EARLY flush trigger, set below this; it is NOT
+// the window. Standard Claude window is 200k; override for a 1M-context model via
+// ALEXANDRIA_CONTEXT_WINDOW.
+const DEFAULT_WINDOW = 200_000;
+export function contextWindow(env = process.env) {
+  const raw = Number(env.ALEXANDRIA_CONTEXT_WINDOW);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_WINDOW;
+}
+
 // Total context load carried into a turn = everything on the input side. With
 // --resume, the bulk of the replayed thread shows up as cache reads, so all three
 // input buckets count. Missing fields default to 0 (older CLI / mock → load 0 →

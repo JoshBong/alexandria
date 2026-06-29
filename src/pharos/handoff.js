@@ -1,6 +1,6 @@
 // The compaction tier — handoff + reseed for a degraded Keeper.
 //
-// When the secretary sees a Keeper's answer lose its canary, the warm thread is
+// When Pharos sees a Keeper's answer lose its canary, the warm thread is
 // degraded. We can't reach into the claude session to compact it cleanly, but we
 // CAN do the next best thing (Josh: "it's late but better than nothing"): write a
 // handoff, flush the session, and REDO the turn on a fresh session reseeded with
@@ -9,7 +9,7 @@
 // continuity on the redo.
 //
 // Continuity source = the last few prompts to that Keeper, tracked in the registry
-// (pointers, not warm context — stays within the stateless-secretary rule). This is
+// (pointers, not warm context — stays within the stateless-head rule). This is
 // the minimal durable trace needed to make a fresh session pick up where it left off.
 
 import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';

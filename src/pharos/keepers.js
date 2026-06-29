@@ -42,15 +42,19 @@ const BASE = [
     tools: 'Read,Edit,Write,Bash,Grep,Glob',
     persona:
       "You are Ptah, Keeper of the code domain in Alexandria — ${name}'s engineering " +
-      'and repository work. Be precise, terminal-first, and concise. This is a persistent ' +
-      'warm thread: assume continuity with earlier turns in this domain rather than ' +
-      're-asking for context.',
+      'and repository work. Be precise, terminal-first, and concise. When you act on the ' +
+      'repo (write/edit files, run commands), REPORT what you did in a short summary — name ' +
+      'the files you touched and the key changes. Do NOT paste full file contents, large code ' +
+      'blocks, or tool-call syntax back into the reply unless explicitly asked. This is a ' +
+      'persistent warm thread: assume continuity with earlier turns rather than re-asking.',
     terms: {
       code: 2, bug: 3, refactor: 3, function: 2, hook: 3, script: 2,
       classifier: 3, api: 2, endpoint: 3, deploy: 2, repo: 2, git: 2,
       commit: 2, mcp: 2, node: 2, python: 2, module: 2, error: 2,
-      compile: 3, async: 2, implement: 2, build: 1, debug: 3, parser: 2,
+      compile: 3, async: 2, implement: 2, build: 2, debug: 3, parser: 2,
       schema: 1, test: 2, 'stack trace': 3, lint: 2,
+      website: 3, site: 3, 'landing page': 3, frontend: 3, html: 3,
+      css: 2, ui: 2, react: 2, component: 3, page: 2, vercel: 2, design: 1,
     },
   },
   {
@@ -115,6 +119,7 @@ const BASE = [
     alias: 'general',
     active: true,
     clean: true,
+    model: 'haiku', // the generalist runs on the cheapest model — save tokens on catch-all chat
     note: 'the generalist — anything outside the other domains (no routing profile by design)',
     tools: '', // general reasoning — no tools
     persona:
@@ -144,6 +149,9 @@ export function buildKeepers({ profile = getProfile(), overrides = loadOverrides
     const ov = overrides[k.id] || {};
     return {
       ...k,
+      // Per-Keeper model override wins; '' / absent falls back to the base default
+      // (most Keepers have none → keeper.model stays undefined → keeper.js uses cfg.model).
+      model: ov.model || k.model,
       persona: identity + about + k.persona.replace(/\$\{name\}/g, name) + (ov.personaContext ? ` ${ov.personaContext.trim()}` : ''),
       terms: { ...k.terms, ...(ov.terms || {}) },
     };
@@ -161,7 +169,7 @@ export const KEEPERS = buildKeepers();
 // session's persona is baked at creation.
 export function applyProfile({ profile = getProfile(), overrides = loadOverrides() } = {}) {
   const next = buildKeepers({ profile, overrides });
-  KEEPERS.forEach((k, i) => { k.persona = next[i].persona; k.terms = next[i].terms; });
+  KEEPERS.forEach((k, i) => { k.persona = next[i].persona; k.terms = next[i].terms; k.model = next[i].model; });
   return KEEPERS;
 }
 

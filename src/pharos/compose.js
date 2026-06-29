@@ -1,8 +1,8 @@
-// Pharos's prompt-writer — the secretary composes the turn it sends to a Keeper
+// Pharos's prompt-writer — Pharos composes the turn it sends to a Keeper
 // instead of relaying the raw user prompt.
 //
 // "Pharos routes AND writes." Routing alone passes the user's words straight
-// through; composing lets the stateless secretary add value on every turn: attach
+// through; composing lets stateless Pharos add value on every turn: attach
 // relevant memory as labelled context, and frame the request — without ever
 // distorting what the user actually said (their words go through verbatim, wrapped,
 // never rewritten by the local composer).
