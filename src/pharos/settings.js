@@ -48,6 +48,7 @@ export const DEFAULTS = {
 export const STRING_DEFAULTS = {
   sharedTools: '',
   mcpConfig: '',
+  model: '', // which model the Keepers run on (claude CLI --model alias/id). '' = CLI default.
 };
 
 const ENV = {
@@ -61,6 +62,7 @@ const ENV = {
 const STRING_ENV = {
   sharedTools: 'ALEXANDRIA_SHARED_TOOLS',
   mcpConfig: 'ALEXANDRIA_MCP_CONFIG',
+  model: 'ALEXANDRIA_MODEL',
 };
 
 function envBool(name) {

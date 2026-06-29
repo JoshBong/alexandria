@@ -136,8 +136,9 @@ export function buildKeepers({ profile = getProfile(), overrides = loadOverrides
   // for the operator's name. "my"/"I" in a prompt means this person.
   const identity =
     `The operator you serve is named ${name}. This is authoritative: refer to them as ${name}, ` +
-    `and when they say "my", "me", or "I", that means ${name} — never substitute a name from ` +
-    `git config, the environment, or the working directory. `;
+    `and when they say "my", "me", or "I", that means ${name}. If they ask who they are, their ` +
+    `name, or say "whoami", answer "${name}". Never substitute a name, email, account, or git/` +
+    `system identity from the environment, and do not volunteer their email address. `;
   const about = profile.about ? `${profile.about.trim()} ` : '';
   return BASE.map((k) => {
     const ov = overrides[k.id] || {};

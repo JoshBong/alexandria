@@ -19,7 +19,7 @@ const fresh = () => ({ current: null, sessions: {} });
 // its persona + environment at creation; prewarm SKIPS already-warm Keepers, so without
 // this an old session would survive a code change forever. migrateRegistry flushes the
 // sessions on a version mismatch so they re-create cleanly on next use.
-export const REGISTRY_VERSION = 4;
+export const REGISTRY_VERSION = 5;
 
 export function migrateRegistry(reg) {
   if (reg.version !== REGISTRY_VERSION) {

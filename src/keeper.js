@@ -53,6 +53,7 @@ export function boatExtraArgs(keeper, cfg) {
   if (keeper.clean) extra.push('--setting-sources', 'local');
   if (cfg.skipPerms) extra.push('--dangerously-skip-permissions');
   if (cfg.mcpConfig) extra.push('--mcp-config', cfg.mcpConfig);
+  if (cfg.model) extra.push('--model', cfg.model);
   return extra;
 }
 

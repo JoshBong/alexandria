@@ -1,0 +1,201 @@
+# Auto-Loop — implementation plan
+
+> Status: design (not built). A loop is **a task with a done-condition.** Pharos
+> already runs *one* turn against a warm Keeper (`handle()`); the auto-loop runs a
+> *sequence* of turns toward a goal, replanning as the human injects ideas, until
+> the goal's done-condition holds or a guard trips.
+
+## 1. The model (settled)
+
+- A loop is an **ordered list of steps** plus a **done-condition**. Steps are
+  removed as completed; when the list satisfies the done-condition, the loop exits.
+- **Each step runs an inner cycle:** `do → verify-against-ground-truth → adjust`,
+  bounded by an attempt budget. Ground truth is domain-pluggable (Ptah: tests;
+  Thoth: source/rubric; Ra: inbox/calendar).
+- **Mid-step is sacred.** Inputs never interrupt a running step. They buffer.
+- **The boundary is the only checkpoint.** After a step finishes, in order:
+  1. freshness check → reseed if drifting (the canary, now machine-checked)
+  2. drain the input buffer (batched) → elaborate → replan the unlocked tail
+  3. pick the next ready step
+  A quiet boundary (empty buffer, healthy context) just advances — near-zero cost.
+- **One structure, not two.** No separate stack. A blocker is just an input
+  inserted right after the cursor; depth-first handling falls out of insert-just-ahead.
+- **Done steps are a locked prefix.** Replan only reorders the unlocked tail.
+  Reopening a done step (rework / the "in the past" case) is an *explicit unlock* —
+  rare, surfaced, never silent.
+
+## 2. Where it sits
+
+```
+runLoop(goal)                         ← NEW: the loop driver (src/loop/run.js)
+  └─ plan(goal) / replan(plan, inputs)   ← NEW: the planner (one fn, called repeatedly)
+  └─ for each step:
+       runStep(step)                     ← NEW: inner do→verify→adjust
+         └─ handle(stepPrompt, opts)     ← REUSE: existing Pharos turn (src/pharos.js)
+                                            (routing, warm session, canary/early gates,
+                                             handoff/reseed, memory recall — all already built)
+```
+
+The loop is a thin orchestrator. It does **not** re-implement session management,
+compaction, or memory — it calls `handle()` per step and reads the signals
+`handle()` already returns (`compacting`, `redone`, `degraded`, `contextTokens`).
+
+## 3. State (on disk, under `.pharos/loops/<loopId>/`)
+
+Mirrors the existing `.pharos/` convention (gitignored, anchored to repoRoot).
+
+- `plan.json` — the living plan. Re-read each boundary.
+- `inbox.jsonl` — append-only input buffer (async injections land here).
+- `log.jsonl` — per-step/per-boundary events (reuses `logEvent` shape from events.js).
+
+```jsonc
+// plan.json
+{
+  "loopId": "…",
+  "goal": "make me an itinerary for next week",
+  "done": "every day Jul 5–14 has lodging + transport confirmed",  // checkable predicate
+  "type": "bounded",            // bounded | open-ended (rare)
+  "cursor": 3,                  // index of the active step
+  "steps": [
+    { "id": "s1", "intent": "…", "deps": [], "touches": ["…"],
+      "status": "done", "locked": true, "attempts": 1 },
+    { "id": "s4", "intent": "…", "deps": ["s2"], "touches": ["…"],
+      "status": "pending", "locked": false, "attempts": 0, "origin": "input:i2" }
+  ]
+}
+```
+
+```jsonc
+// inbox.jsonl — one line per raw injection
+{ "id": "i2", "raw": "add the safari lodges", "ts": "…", "elaborated": null }
+```
+
+## 4. Components to build
+
+| # | Component | New file | Reuses |
+|---|-----------|----------|--------|
+| 1 | Loop driver | `src/loop/run.js` | `handle()`, events.js |
+| 2 | Planner (`plan` + `replan`) | `src/loop/plan.js` | `opts.ask` LLM seam, memory `store.search` |
+| 3 | Step runner (`do→verify→adjust`) | `src/loop/step.js` | `handle()`, per-Keeper verify |
+| 4 | Input elaborator | `src/loop/elaborate.js` | `opts.ask` |
+| 5 | Plan store (read/write/lock) | `src/loop/plan-store.js` | `.pharos/` path convention |
+| 6 | Inbox (append/drain) | `src/loop/inbox.js` | append-only file like events.js |
+| 7 | Guards (watchdog/budget/ceiling) | `src/loop/guards.js` | — |
+| 8 | Domain verify table | extend `src/pharos/keepers.js` | adds `verify` per Keeper |
+
+Mock-first, like the rest of the project: every LLM seam (`plan`, `elaborate`,
+`verify`) is injectable so the loop's control flow is testable offline with no
+`claude` spawn — same discipline as `opts.classify` / `opts.compose` / `opts.runTurn`.
+
+## 5. The input elaborator (the "full potential" piece)
+
+Raw input never hits the planner. It's elaborated into intent first — and the
+output **exposes the seam** between what you said and what it's guessing, so *you*
+set the elaboration depth at a glance instead of the model guessing a sweet spot.
+
+Elaboration output (per input):
+```
+You said:    <verbatim>
+Entailed:    <derived, confident — each point cites a source: file / goal / prior decision>
+Assuming:    <inferred, you didn't say it — vetoable in one glance>
+Fork:        <irreversible choice that can't be derived — the only thing worth asking about>
+```
+
+Rules:
+- **Unpack freely, extrapolate never.** Entailed = consequences of your words +
+  context. Assuming = anything justified only by "best practice / users usually want."
+- **Sourcing gate:** an Entailed point must trace to evidence, or it demotes to Assuming.
+- **Calibrate toward Assuming.** When unsure, bucket it as an assumption.
+  Under-confidence is free (you glance + approve); over-confidence is silent drift.
+- **Depth ∝ reversibility:** elaborate deep where wrong-is-cheap (a color), shallow
+  where wrong-is-expensive (data model, API contract).
+- An elaborated input may **decompose into several steps** — the planner weaves them
+  all into the tail, not just one item.
+- Run elaboration **on arrival, during the running step** (it doesn't touch the
+  step), so the buffer holds ready-to-place intent by the boundary.
+
+## 6. The planner (`plan` = first call, `replan` = every later call — same fn)
+
+- Input: `goal`, `done`, current `plan` (locked prefix + tail), drained+elaborated inbox.
+- Output: a revised tail ordering. Locked prefix is **frozen** — cannot be reordered.
+- **Revise, don't regenerate.** Touch only what the new input affects; keep the rest
+  stable (no gratuitous step-id churn, never move the in-flight step).
+- To force rework of a done step, the planner must emit an explicit
+  `unlock(stepId)` — surfaced to the human, not applied silently. Before redoing,
+  re-ground: re-read what was actually built for that step (scoped, not full history).
+- First call: empty prefix, full goal → produces the initial ordered list + the
+  `done` predicate. If the goal has no checkable predicate ("design this"), the
+  planner **proposes** acceptance criteria and asks once to confirm.
+
+## 7. Boundary control flow (`src/loop/run.js`)
+
+```
+loadPlan()
+while (true):
+  step = nextReady(plan)                 // deps satisfied, status pending
+  if (!step):                            // nothing ready
+     if (doneConditionHolds(plan)) exit SUCCESS
+     if (allRemainingBlocked(plan))  exit STUCK
+  result = runStep(step)                 // do → verify → adjust (attempt budget)
+  markStep(step, result)                 // done | parked  → save plan (lock if done)
+
+  // ---- BOUNDARY ----
+  if (freshnessLow())                     // contextTokens / canary signal from handle()
+     reseed()                             // REUSE handoff.js + early-gate machinery
+  inputs = drainInbox()                   // batched
+  if (inputs.length):
+     elaborated = inputs.map(elaborate)   // (already elaborated on arrival; finalize)
+     plan = replan(plan, elaborated)      // reorder unlocked tail only
+  if (guardsTrip(plan)) exit STUCK        // watchdog / ceiling
+  savePlan(plan)
+```
+
+## 8. Guards / termination
+
+Two exit categories: **done** (success) and **stuck** (surfaced failure).
+
+| Guard | Scope | Fires when | Action |
+|-------|-------|-----------|--------|
+| Attempt budget (N) | one step | verify fails N times | park the step, move on |
+| Progress watchdog (K) | the plan | K boundaries, no step → done/parked | **halt + surface** (the real infinite-loop guard) |
+| Parked ceiling (X) | the plan | > X steps parked | halt + escalate |
+| Hard ceiling | everything | total-step / wall-clock cap | halt (backstop, never expected to hit) |
+| Human STOP | everything | injected stop | halt immediately (the one interrupt that preempts a step) |
+
+The watchdog is non-negotiable: per-step budgets stop one step spinning; only the
+watchdog stops the *plan* spinning (replan churn, park/unpark oscillation). Parking
+counts as progress, so a genuinely hard step doesn't trip it — a loop going nowhere does.
+
+## 9. Domain pluggability
+
+Each Keeper gets a `verify` describing its ground truth (extend `keepers.js`):
+- **Ptah (code):** run tests / compile. `do→test→fix`.
+- **Thoth (classwork):** check output against syllabus/source/rubric.
+- **Ra (personal):** check against inbox/calendar reality (the spec-vs-reality rule
+  as an executable step — "is it *actually* booked").
+
+Same `do → verify → adjust` shape everywhere; only the verify target differs. The
+step runner is domain-agnostic; it calls `keeper.verify`.
+
+## 10. Phased rollout
+
+- **P0 — control flow, mock.** `run.js` + `plan-store.js` + `inbox.js` with injected
+  mock `plan`/`elaborate`/`verify`/`handle`. Prove: ordered run, remove-on-done,
+  buffer→replan at boundary, locked prefix, all guards, done/stuck exits. No `claude`.
+- **P1 — live planner + elaborator.** Wire `opts.ask` into `plan`/`elaborate`; the
+  seam-exposed elaboration output; confirm-on-fork.
+- **P2 — live step runner over Pharos.** `runStep` calls `handle()`; freshness reseed
+  uses the signals `handle()` already returns. One Keeper (Ptah) end to end.
+- **P3 — domain verify + multi-Keeper.** `verify` table; a loop step can route to the
+  right Keeper per step.
+- **P4 — async injection UX.** Non-blocking stdin in `bin/pharos.js` (today input is
+  paused during a turn) → writes to `inbox.jsonl` while a loop runs.
+
+## 11. Open decisions
+
+1. **Who writes the done-condition** — planner proposes + you confirm, or you always
+   state it up front?
+2. **Async input transport** — typed into the same TUI (needs the non-blocking-stdin
+   change, P4), or a separate `alexandria-input` writer to `inbox.jsonl`?
+3. **Reseed vs replan order at a boundary** when both fire — current plan: reseed
+   first (clean context), then replan into the fresh session.

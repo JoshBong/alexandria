@@ -154,13 +154,14 @@ function printMetrics(r) {
 // `/settings <key> <value>` sets a string (sharedTools/mcpConfig). Writes through to
 // .pharos/settings.json so the next turn's getSettings() picks it up.
 const BOOL_KEYS = ['reframe', 'revoice', 'skipPerms', 'prewarm', 'metrics'];
-const STR_KEYS = ['sharedTools', 'mcpConfig'];
+const STR_KEYS = ['model', 'sharedTools', 'mcpConfig'];
 const SETTING_HELP = {
   reframe: 'secretary rewrites your prompt for the Keeper',
   revoice: 'secretary re-voices the Keeper\'s answer',
   skipPerms: 'boats run headless (skip permission prompts)',
   prewarm: 'warm all Keepers on startup',
   metrics: 'show the per-turn metrics line',
+  model: 'which model the Keepers run on (e.g. sonnet, opus, haiku)',
   sharedTools: 'extra built-in tools every Keeper can load on demand',
   mcpConfig: 'shared MCP connector config (browser/Gmail/…) for every Keeper',
 };
@@ -236,79 +237,12 @@ function printStatus() {
   console.log('');
 }
 
-// ---- the input: a raw-mode line editor that draws a real box (top + bottom border)
-// AROUND the live input. readline can't keep a border below the cursor — it owns the
-// input line and any manual paint below staircases — so we own the keyboard here. The
-// box uses cursor save/restore (ESC 7/8), which is width-agnostic, so the ⟡ marker's
-// ambiguous width never throws off the cursor. Non-TTY falls back to a plain line
-// source (pipes / tests). ----
-
-// Non-TTY line source: one readline, a queue, and an awaitable next().
-let pipedNext = null;
-if (!TTY) {
-  const rlp = readline.createInterface({ input: process.stdin });
-  const q = [];
-  let waiter = null;
-  let done = false;
-  rlp.on('line', (l) => { if (waiter) { const w = waiter; waiter = null; w(l); } else q.push(l); });
-  rlp.on('close', () => { done = true; if (waiter) { const w = waiter; waiter = null; w(null); } });
-  pipedNext = () => new Promise((res) => { if (q.length) res(q.shift()); else if (done) res(null); else { waiter = res; } });
-}
-
-// Read one line. TTY → boxed raw-mode editor; non-TTY → next piped line (or null at EOF).
-function readLine({ prefix = PREFIX, box = true } = {}) {
-  if (!TTY) return pipedNext();
-  return new Promise((resolve) => {
-    const stdin = process.stdin;
-    let buf = '';
-    let cur = 0;
-    let drawn = false;
-    readline.emitKeypressEvents(stdin);
-    if (stdin.setRawMode) stdin.setRawMode(true);
-    stdin.resume();
-
-    const bar = `  ${C.bronze}${rule()}${C.reset}`;
-    const render = () => {
-      if (box) {
-        if (drawn) process.stdout.write('\x1b[1A'); // from the (restored) input line up to the top rule
-        process.stdout.write(`\r\x1b[2K${bar}\n`); // top border
-        process.stdout.write(`\r\x1b[2K${prefix}${buf}`); // input line, cursor now at end of buf
-        if (cur < buf.length) process.stdout.write(`\x1b[${buf.length - cur}D`); // back to the edit point
-        process.stdout.write('\x1b7'); // SAVE the exact edit position (width-agnostic)
-        process.stdout.write(`\n\r\x1b[2K${bar}`); // bottom border (one line below)
-        process.stdout.write('\x1b8'); // RESTORE — back onto the input line
-      } else {
-        process.stdout.write(`\r\x1b[2K${prefix}${buf}`);
-        if (cur < buf.length) process.stdout.write(`\x1b[${buf.length - cur}D`);
-      }
-      drawn = true;
-    };
-    const finish = (val) => {
-      stdin.removeListener('keypress', onKey);
-      if (stdin.setRawMode) stdin.setRawMode(false);
-      if (box) process.stdout.write('\x1b[1B'); // down onto the bottom border so output flows under the box
-      process.stdout.write('\n');
-      resolve(val);
-    };
-    const onKey = (str, key) => {
-      key = key || {};
-      if (key.ctrl && key.name === 'c') return finish('/exit');
-      if (key.ctrl && key.name === 'd') return finish(buf.length ? buf : '/exit');
-      if (key.name === 'return' || key.name === 'enter') return finish(buf);
-      if (key.name === 'backspace') { if (cur > 0) { buf = buf.slice(0, cur - 1) + buf.slice(cur); cur -= 1; } return render(); }
-      if (key.name === 'left') { if (cur > 0) cur -= 1; return render(); }
-      if (key.name === 'right') { if (cur < buf.length) cur += 1; return render(); }
-      if (key.name === 'home') { cur = 0; return render(); }
-      if (key.name === 'end') { cur = buf.length; return render(); }
-      if (str && !key.ctrl && !key.meta && str >= ' ') { buf = buf.slice(0, cur) + str + buf.slice(cur); cur += str.length; return render(); } // printable (incl. paste)
-    };
-    stdin.on('keypress', onKey);
-    render();
-  });
-}
-
-// Never leave the terminal stuck in raw mode if we crash/exit unexpectedly.
-process.on('exit', () => { try { if (TTY && process.stdin.setRawMode) process.stdin.setRawMode(false); } catch { /* noop */ } });
+// ---- the input: plain readline. A hand-rolled raw-mode box proved too fragile across
+// terminals (it staircased / mis-placed the cursor); a true Claude-Code box needs a TUI
+// library like Ink. This is one persistent interface with a clean ⟡ prompt — reliable
+// everywhere, including piped/non-TTY. ----
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+const PROMPT = TTY ? `\n  ${C.gold}⟡${C.reset} ${C.deep}›${C.reset} ` : "alexandria› ";
 
 // Handle one submitted line. Returns false to quit the loop, true to keep going.
 async function handleLine(line) {
@@ -319,6 +253,12 @@ async function handleLine(line) {
   if (p === '/metrics') { showMetrics = !showMetrics; console.log(`  ${C.dim}metrics ${showMetrics ? `${C.green}on` : 'off'}${C.reset}\n`); return true; }
   if (p === '/status') { printStatus(); return true; }
   if (p === '/help' || p === '/hlp' || p === '/?' || p === '/h') { printHelp(); return true; }
+  if (p === '/model' || p.startsWith('/model ')) {
+    const v = p.slice(6).trim();
+    if (v) changeSettings(['model', v]); // takes effect next turn (--model on each boat spawn)
+    else console.log(`  ${C.dim}model: ${C.gold}${cfg.model || '(CLI default)'}${C.reset}${C.dim} — /model <name> to change (sonnet, opus, haiku, …)${C.reset}\n`);
+    return true;
+  }
   if (p === '/settings' || p.startsWith('/settings ')) {
     const args = p.split(/\s+/).slice(1);
     if (args.length) changeSettings(args);
@@ -327,7 +267,7 @@ async function handleLine(line) {
   }
   if (p === '/name' || p.startsWith('/name ')) {
     let nm = p.slice(5).trim();
-    if (!nm) nm = (await readLine({ prefix: `  ${C.gold}new name${C.reset} ${C.deep}›${C.reset} `, box: false })).trim();
+    if (!nm) nm = (await ask(rl, `  ${C.gold}new name${C.reset} ${C.deep}›${C.reset} `)).trim();
     if (nm) {
       const saved = saveProfile({ name: nm });
       profile.name = saved.name;
@@ -363,13 +303,13 @@ async function handleLine(line) {
   return true;
 }
 
-// The loop: read a line, handle it, repeat. Turns are naturally serialized (we await
-// each before reading the next). Exits on /exit or EOF.
-let running = true;
-while (running) {
-  const line = await readLine();
-  if (line === null) break; // piped EOF
-  running = await handleLine(line);
-}
-console.log(`  ${C.dim}— Alexandria out.${C.reset}`);
-process.exit(0);
+function showPrompt() { rl.setPrompt(PROMPT); rl.prompt(); }
+showPrompt();
+rl.on("line", async (line) => {
+  rl.pause();
+  const keep = await handleLine(line);
+  if (!keep) return rl.close();
+  rl.resume();
+  showPrompt();
+});
+rl.on("close", () => { console.log(`  ${C.dim}— Alexandria out.${C.reset}`); process.exit(0); });
