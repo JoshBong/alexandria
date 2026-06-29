@@ -88,7 +88,7 @@ const roster = KEEPERS.filter((k) => k.active).map((k) => `${C.b}${k.id[0].toUpp
 console.log('');
 console.log(`  ${C.b}${C.gold}Alexandria${C.reset}  ${C.dim}Pharos routes · Keepers hold · Alexandria remembers${C.reset}  ${C.gray}·${C.reset}  ${C.sand}${profile.name}${C.reset}`);
 console.log(`  ${C.dim}${mock ? 'mock mode (no API)' : 'live mode'} ${C.reset}${roster}`);
-console.log(`  ${C.gray}/settings  /metrics  /status  /reset  /exit${C.reset}`);
+console.log(`  ${C.gray}/help for commands  ·  /exit to quit${C.reset}`);
 console.log('');
 
 // Warm every Keeper up front (parallel) so the first switch to a domain resumes a
@@ -203,6 +203,87 @@ function doReset() {
   console.log(`  ${C.dim}restart Alexandria (npm run alexandria) to set up from scratch.${C.reset}\n`);
 }
 
+// Interactive /settings — an arrow-key menu so you can flip several at once. ↑↓ move,
+// enter toggles a bool / edits a string inline, esc leaves. Raw-mode; falls back to the
+// static list on a non-TTY. Pauses the main readline while it owns the keyboard.
+function settingsMenu() {
+  if (!TTY) { printSettings(); return Promise.resolve(); }
+  const rows = [...BOOL_KEYS.map((k) => ({ k, type: 'bool' })), ...STR_KEYS.map((k) => ({ k, type: 'str' }))];
+  let idx = 0, printed = 0, editing = null;
+  const stdin = process.stdin;
+  rl.pause();
+  readline.emitKeypressEvents(stdin);
+  const wasRaw = !!stdin.isRaw;
+  if (stdin.setRawMode) stdin.setRawMode(true);
+
+  const render = () => {
+    if (printed) process.stdout.write(`\x1b[${printed}A\x1b[0J`);
+    const out = [`  ${C.b}${C.gold}Settings${C.reset}  ${C.dim}↑↓ move · enter ${editing ? 'save' : 'toggle/edit'} · esc ${editing ? 'cancel' : 'done'}${C.reset}`];
+    rows.forEach((r, i) => {
+      const mark = i === idx ? `${C.gold}►${C.reset}` : ' ';
+      if (editing && i === idx && r.type === 'str') {
+        out.push(`  ${mark} ${C.gray}◦${C.reset} ${C.b}${r.k.padEnd(11)}${C.reset} ${C.gold}${editing.buf}${C.reset}${C.dim}▏${C.reset}`);
+      } else if (r.type === 'bool') {
+        const on = cfg[r.k];
+        out.push(`  ${mark} ${on ? `${C.green}●${C.reset}` : `${C.gray}○${C.reset}`} ${C.b}${r.k.padEnd(11)}${C.reset} ${C.dim}${(on ? 'on' : 'off').padEnd(4)} ${SETTING_HELP[r.k]}${C.reset}`);
+      } else {
+        out.push(`  ${mark} ${C.gray}◦${C.reset} ${C.b}${r.k.padEnd(11)}${C.reset} ${C.dim}${cfg[r.k] || '(none)'}  ${SETTING_HELP[r.k]}${C.reset}`);
+      }
+    });
+    process.stdout.write(out.join('\n') + '\n');
+    printed = out.length;
+  };
+
+  return new Promise((resolve) => {
+    const cleanup = () => {
+      stdin.removeListener('keypress', onKey);
+      if (stdin.setRawMode) stdin.setRawMode(wasRaw);
+      process.stdout.write('\n');
+      rl.resume();
+      resolve();
+    };
+    const onKey = (str, key) => {
+      key = key || {};
+      if (editing) {
+        if (key.name === 'return') { cfg = saveSettings({ [rows[idx].k]: editing.buf.trim() }); editing = null; render(); }
+        else if (key.name === 'escape') { editing = null; render(); }
+        else if (key.name === 'backspace') { editing.buf = editing.buf.slice(0, -1); render(); }
+        else if (str && str.length === 1 && !key.ctrl && str >= ' ') { editing.buf += str; render(); }
+        return;
+      }
+      if (key.ctrl && key.name === 'c') return cleanup();
+      switch (key.name) {
+        case 'up': idx = (idx - 1 + rows.length) % rows.length; render(); break;
+        case 'down': case 'tab': idx = (idx + 1) % rows.length; render(); break;
+        case 'escape': case 'q': cleanup(); break;
+        case 'return': case 'space': {
+          const r = rows[idx];
+          if (r.type === 'bool') { const v = !cfg[r.k]; cfg = saveSettings({ [r.k]: v }); if (r.k === 'metrics') showMetrics = v; render(); }
+          else { editing = { buf: cfg[r.k] || '' }; render(); }
+          break;
+        }
+      }
+    };
+    stdin.on('keypress', onKey);
+    render();
+  });
+}
+
+const COMMANDS = [
+  ['/settings', 'view & toggle settings (arrow keys, enter, esc)'],
+  ['/name', 'change what your Keepers call you'],
+  ['/metrics', 'toggle the per-turn token + timing line'],
+  ['/status', 'show each Keeper and whether it is warm'],
+  ['/reset', 'wipe all state for a clean first-run (testing)'],
+  ['/help', 'this list'],
+  ['/exit', 'quit'],
+];
+function printHelp() {
+  console.log(`  ${C.b}${C.gold}Commands${C.reset}`);
+  for (const [c, d] of COMMANDS) console.log(`    ${C.gold}${c.padEnd(10)}${C.reset} ${C.dim}${d}${C.reset}`);
+  console.log(`  ${C.dim}anything else is a question — Pharos routes it to the right Keeper.${C.reset}\n`);
+}
+
 function printStatus() {
   const reg = loadRegistry(registryPath);
   const cur = reg.current;
@@ -247,9 +328,30 @@ rl.on('line', (line) => {
     printStatus();
     return reprompt();
   }
-  if (p === '/settings' || p.startsWith('/settings ')) {
-    changeSettings(p.split(/\s+/).slice(1));
+  if (p === '/help' || p === '/hlp' || p === '/?' || p === '/h') {
+    printHelp();
     return reprompt();
+  }
+  if (p === '/settings' || p.startsWith('/settings ')) {
+    const args = p.split(/\s+/).slice(1);
+    if (args.length) { changeSettings(args); return reprompt(); } // text form (scripting / non-TTY)
+    settingsMenu().then(reprompt); // interactive arrow-key menu
+    return;
+  }
+  if (p === '/name' || p.startsWith('/name ')) {
+    const apply = (nm) => {
+      if (nm) {
+        const saved = saveProfile({ name: nm });
+        profile.name = saved.name;
+        console.log(`  ${C.green}✓${C.reset} name set to ${C.b}${saved.name}${C.reset} ${C.dim}(applies to new Keeper sessions; restart to refresh personas)${C.reset}\n`);
+      } else {
+        console.log(`  ${C.dim}name unchanged${C.reset}\n`);
+      }
+      reprompt();
+    };
+    const arg = p.slice(5).trim();
+    if (arg) return apply(arg);
+    return rl.question(`  new name: `, (a) => apply(a.trim()));
   }
 
   rl.pause();
