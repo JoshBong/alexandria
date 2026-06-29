@@ -3,16 +3,17 @@
 // Each Keeper maps a god (canonical `id`) to a plain-English domain (`alias`), a
 // weighted keyword profile Pharos routes on (weights 3/2/1; multi-word keys are
 // phrase-matched as substrings, +1 bonus), an `active` flag (does a live Keeper
-// session exist yet?), and a `persona` (its standing system prompt — kept short
-// and stable so it caches).
+// session exist yet?), a `persona` (its standing system prompt — kept short and
+// stable so it caches), and a `tools` allowlist passed to the boat's `claude`
+// spawn (`--tools`). Tools are sized to the domain: a reasoner Keeper that answers
+// over injected context carries NONE (`''` → boat baseline ~6k, not ~26k); only a
+// Keeper that actually acts on the repo (Ptah) carries real tools. The orchestrator
+// holds the heavy toolbox one layer down; the boats stay lean.
 //
 // Anubis is the intake/lobby Keeper: NO routing profile by design. Pharos lands
 // here as the cold-start fallback when nothing clears the FLOOR (a new/unrouted
 // topic that hasn't earned its own Keeper). Once you're mid-conversation in a
 // Keeper, stickiness keeps terse follow-ups in that Keeper instead (see classify).
-//
-// Phase 1 stands up Ptah, Ra, and Anubis. Thoth and Horus are defined for routing
-// but inactive until later phases (Pharos falls them back to intake for now).
 
 export const KEEPERS = [
   {
@@ -20,6 +21,8 @@ export const KEEPERS = [
     alias: 'code',
     active: true,
     note: 'craftsman-creator god — building, engineering, the repo',
+    // The one acting Keeper: it touches the repo, so it carries real tools.
+    tools: 'Read,Edit,Write,Bash,Grep,Glob',
     persona:
       'You are Ptah, Keeper of the code domain in Alexandria — Josh\'s engineering work ' +
       '(the Alexandria orchestrator itself, the ark hooks, devnexus). Be precise, ' +
@@ -39,6 +42,7 @@ export const KEEPERS = [
     alias: 'personal',
     active: true,
     note: 'the sun at the center — life, schedule, travel, family',
+    tools: '', // reasons over injected context — no tools
     persona:
       'You are Ra, Keeper of Josh\'s personal domain in Alexandria — schedule, travel, ' +
       'family, church, and life logistics. Be concise and practical. This is a persistent ' +
@@ -54,8 +58,15 @@ export const KEEPERS = [
   {
     id: 'thoth',
     alias: 'classwork',
-    active: false,
+    active: true,
     note: 'scribe of wisdom — study, courses, research, the curriculum',
+    tools: '', // study/answer over injected context — no tools
+    persona:
+      'You are Thoth, Keeper of Josh\'s classwork and study domain in Alexandria — NYU + ' +
+      'Cornell Tech courses and the ML/research-engineering curriculum (linear algebra, ' +
+      'optimization, deep learning, daily leetcode), psets, lectures, and discussion posts. ' +
+      'Be precise and pedagogical: show the work and the reasoning, do not just give answers. ' +
+      'This is a persistent warm thread: assume continuity with earlier turns in this domain.',
     terms: {
       class: 3, homework: 3, pset: 3, assignment: 3, 'discussion post': 3,
       lecture: 3, exam: 3, study: 2, math: 2, 'linear algebra': 3,
@@ -67,8 +78,15 @@ export const KEEPERS = [
   {
     id: 'horus',
     alias: 'career',
-    active: false,
+    active: true,
     note: 'the far-seeing Eye — offers, recruiting, the professional track',
+    tools: '', // strategy/answer over injected context — no tools
+    persona:
+      'You are Horus, Keeper of Josh\'s career domain in Alexandria — offers (Juniper, ' +
+      'Planisphere), recruiting, interviews, compensation and negotiation, Mercor, and the ' +
+      'professional track toward Cornell Tech and beyond. Be strategic, direct, and honest ' +
+      'about tradeoffs. This is a persistent warm thread: assume continuity with earlier ' +
+      'turns in this domain.',
     terms: {
       juniper: 3, planisphere: 3, offer: 3, recruiter: 3, resume: 3,
       interview: 3, salary: 3, tc: 3, mercor: 3, networking: 2, linkedin: 3,
@@ -81,6 +99,7 @@ export const KEEPERS = [
     alias: 'intake',
     active: true,
     note: 'threshold guardian — catch-all for new/unrouted topics (no routing profile by design)',
+    tools: '', // general reasoning — no tools
     persona:
       'You are Anubis, the intake Keeper of Alexandria — you field new or unclassified ' +
       'requests that have no dedicated Keeper yet. Be helpful and general. If a topic ' +

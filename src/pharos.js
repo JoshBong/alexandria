@@ -15,6 +15,8 @@ import { hasCanary, stripCanary } from './pharos/canary.js';
 import { trackRecent, writeHandoff, buildReseed } from './pharos/handoff.js';
 import { isTokenLow } from './pharos/tokens.js';
 import { logEvent, eventsEnabled } from './pharos/events.js';
+import { getSettings } from './pharos/settings.js';
+import { makeReframeComposer, revoiceAnswer } from './pharos/reframe.js';
 
 const ACTIVE = new Set(KEEPERS.filter((k) => k.active).map((k) => k.id));
 const aliasOf = (id) => (KEEPERS.find((k) => k.id === id) || {}).alias || id;
@@ -24,8 +26,15 @@ export async function handle(prompt, opts = {}) {
   // opts.registryPath isolates the head's pointer file (tests, or running more than
   // one Alexandria instance) — defaults to the real .pharos/registry.json.
   const reg = opts.reg || loadRegistry(opts.registryPath);
+  const cfg = opts.settings || getSettings();
+  // An LLM seam fires only when its setting is on AND we're live (or a runner is
+  // injected) — so mock tests never spawn a real `claude` even if a flag leaked on.
+  const wantLLM = (flag) => flag && (!mock || !!opts.ask);
 
-  const decision = classify(prompt, { currentKeeper: reg.current });
+  // classify is injectable (opts.classify) for tests of the routing/fallback seam,
+  // consistent with opts.compose / opts.runTurn / opts.store.
+  const classifyFn = opts.classify || classify;
+  const decision = classifyFn(prompt, { currentKeeper: reg.current });
   let routed = decision.routed;
   let note = decision.reason;
 
@@ -53,9 +62,11 @@ export async function handle(prompt, opts = {}) {
   // composer frames the request and attaches recalled context. Injectable via
   // opts.compose so an LLM-backed writer can replace the default local one. With no
   // recall, composeTurn returns the prompt unchanged (mock/warm-hit paths untouched).
-  const compose = opts.compose || composeTurn;
+  // reframe ON → the secretary rewrites the prompt into a clean question for the
+  // Keeper (forward path). OFF → the free local composer frames + attaches recall.
+  const compose = opts.compose || (wantLLM(cfg.reframe) ? makeReframeComposer({ run: opts.ask }) : composeTurn);
   const fresh = !reg.sessions[routed];
-  let turnPrompt = compose({ prompt, recalled, fresh, switched: routed !== reg.current });
+  let turnPrompt = await compose({ prompt, recalled, fresh, switched: routed !== reg.current, alias: aliasOf(routed) });
 
   // If this Keeper was proactively flushed last turn for capacity (the EARLY
   // token-low gate below), its fresh session needs continuity. Prepend the reseed
@@ -78,7 +89,7 @@ export async function handle(prompt, opts = {}) {
 
   const switched = routed !== reg.current;
   const run = opts.runTurn || runTurn;
-  let turn = run(routed, turnPrompt, { mock, reg });
+  let turn = run(routed, turnPrompt, { mock, reg, settings: cfg });
 
   // The canary gate. Late-but-better-than-nothing (Josh): if the Keeper's answer
   // lost its marker, the warm thread is degraded — write a handoff, flush the
@@ -92,7 +103,7 @@ export async function handle(prompt, opts = {}) {
     const reseed = buildReseed(routed, aliasOf(routed), reg);
     const redoPrompt = reseed ? `${reseed}\n\n${turnPrompt}` : turnPrompt;
     if (reseed) reseeded = true;
-    turn = run(routed, redoPrompt, { mock, reg }); // fresh session
+    turn = run(routed, redoPrompt, { mock, reg, settings: cfg }); // fresh session
     redone = true;
     degraded = !hasCanary(turn.text); // still no canary → honestly flag it
   }
@@ -110,6 +121,11 @@ export async function handle(prompt, opts = {}) {
     reg.reseedPending[routed] = true; // next turn to this Keeper reseeds
     compacting = true;
   }
+
+  // revoice ON → the secretary re-delivers the Keeper's answer in one consistent
+  // voice (return path). OFF → relay the Keeper's answer straight through.
+  let finalText = stripCanary(turn.text);
+  if (wantLLM(cfg.revoice)) finalText = await revoiceAnswer({ answer: finalText, prompt }, { run: opts.ask });
 
   reg.current = routed;
   if (persist) saveRegistry(reg, opts.registryPath);
@@ -159,6 +175,6 @@ export async function handle(prompt, opts = {}) {
     degraded,
     compacting,
     contextTokens: turn.contextTokens || 0,
-    text: stripCanary(turn.text),
+    text: finalText,
   };
 }

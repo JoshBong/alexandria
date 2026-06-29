@@ -14,8 +14,9 @@ import { randomUUID } from 'node:crypto';
 import { KEEPERS } from './pharos/keepers.js';
 import { CANARY_INSTRUCTION } from './pharos/canary.js';
 import { contextTokensOf } from './pharos/tokens.js';
+import { getSettings } from './pharos/settings.js';
 
-export function runTurn(keeperId, prompt, { mock = false, reg }) {
+export function runTurn(keeperId, prompt, { mock = false, reg, settings } = {}) {
   const keeper = KEEPERS.find((k) => k.id === keeperId) || { id: keeperId, alias: keeperId, persona: '' };
   const existing = reg.sessions[keeperId];
   const fresh = !existing;
@@ -38,16 +39,26 @@ export function runTurn(keeperId, prompt, { mock = false, reg }) {
   // are unaffected and Josh's direct sessions keep their canary.
   env.ALEXANDRIA_BOAT = '1';
 
+  // Per-Keeper toolbox + headless permission bypass, sized to the domain. A reasoner
+  // Keeper carries `--tools ''` (no built-in tool schemas → boat baseline ~5k, not
+  // ~26k); only an acting Keeper (Ptah) carries a real set. skipPerms bypasses the
+  // permission prompt a headless boat can't answer. Applied to fresh AND resume
+  // spawns (tools are per-process, not stored in the session).
+  const cfg = settings || getSettings();
+  const extra = [];
+  if (typeof keeper.tools === 'string') extra.push('--tools', keeper.tools);
+  if (cfg.skipPerms) extra.push('--dangerously-skip-permissions');
+
   let args;
   let sessionId;
   if (fresh) {
     sessionId = randomUUID();
     // Persona + canary instruction set once at session creation; persists across
     // --resume turns (the system prompt isn't re-sent on resume).
-    args = ['-p', '--session-id', sessionId, '--append-system-prompt', keeper.persona + CANARY_INSTRUCTION, '--output-format', 'json', prompt];
+    args = ['-p', '--session-id', sessionId, '--append-system-prompt', keeper.persona + CANARY_INSTRUCTION, ...extra, '--output-format', 'json', prompt];
   } else {
     sessionId = existing.sessionId;
-    args = ['-p', '--resume', sessionId, '--output-format', 'json', prompt];
+    args = ['-p', '--resume', sessionId, ...extra, '--output-format', 'json', prompt];
   }
 
   const res = spawnSync('claude', args, { env, encoding: 'utf8', maxBuffer: 1e8 });
