@@ -131,11 +131,16 @@ const BASE = [
 // — all from gitignored local files, never the repo. Pure (injectable) for tests.
 export function buildKeepers({ profile = getProfile(), overrides = loadOverrides() } = {}) {
   const name = profile.name || 'the operator';
+  // Identity preamble on EVERY persona (incl. Anubis, which has no ${name} of its own)
+  // so a Keeper always knows who it serves — and never falls back to git config / env
+  // for the operator's name. "my"/"I" in a prompt means this person.
+  const identity = `You serve ${name} — when they say "my", "me", or "I", that refers to ${name}. `;
+  const about = profile.about ? `${profile.about.trim()} ` : '';
   return BASE.map((k) => {
     const ov = overrides[k.id] || {};
     return {
       ...k,
-      persona: k.persona.replace(/\$\{name\}/g, name) + (ov.personaContext ? ` ${ov.personaContext.trim()}` : ''),
+      persona: identity + about + k.persona.replace(/\$\{name\}/g, name) + (ov.personaContext ? ` ${ov.personaContext.trim()}` : ''),
       terms: { ...k.terms, ...(ov.terms || {}) },
     };
   });
@@ -145,6 +150,16 @@ export function buildKeepers({ profile = getProfile(), overrides = loadOverrides
 // BEFORE dynamically importing the modules that pull this in, so the name is set by
 // the time this builds.
 export const KEEPERS = buildKeepers();
+
+// Rebuild personas/terms in place from a (possibly just-changed) profile — so a live
+// `/name` takes effect without a restart. Mutates the exported KEEPERS array's elements
+// so every importer sees the update. Callers should also flush warm sessions, since a
+// session's persona is baked at creation.
+export function applyProfile({ profile = getProfile(), overrides = loadOverrides() } = {}) {
+  const next = buildKeepers({ profile, overrides });
+  KEEPERS.forEach((k, i) => { k.persona = next[i].persona; k.terms = next[i].terms; });
+  return KEEPERS;
+}
 
 // Below FLOOR, no Keeper is confident. Cold-start → Anubis (intake); but if you
 // are already in a Keeper, stickiness keeps you there (see classify).

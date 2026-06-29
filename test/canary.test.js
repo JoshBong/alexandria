@@ -64,7 +64,9 @@ test('buildReseed: empty when there is nothing to restore', () => {
 
 // A fake runTurn that returns canned texts in sequence and mimics real session
 // bookkeeping (sets reg.sessions[id], reports fresh) so flush/reseed are observable.
-function fakeRunner(texts) {
+// contextTokens defaults LOW (no gate). The canary redo only fires near the token
+// limit now, so degradation tests pass a HIGH value to exercise the gate.
+function fakeRunner(texts, contextTokens = 0) {
   const calls = [];
   let i = 0;
   const fn = (keeperId, prompt, { reg }) => {
@@ -73,7 +75,7 @@ function fakeRunner(texts) {
     const text = texts[Math.min(i, texts.length - 1)];
     calls.push({ keeperId, prompt, fresh, text });
     i++;
-    return { text, sessionId: reg.sessions[keeperId].sessionId, fresh };
+    return { text, sessionId: reg.sessions[keeperId].sessionId, fresh, contextTokens };
   };
   return { fn, calls };
 }
@@ -91,8 +93,9 @@ test('gate: a clean (canary-bearing) answer is relayed, no redo', async () => {
 test('gate: a missing canary triggers handoff + flush + reseed + one redo', async () => {
   const dir = tmpDir('gate');
   const reg = { current: 'ptah', sessions: { ptah: { sessionId: 's-old', started: true } }, recent: {} };
-  // first answer degraded (no marker), redo answer clean (marker)
-  const { fn, calls } = fakeRunner(['degraded answer no marker', `recovered ${CANARY}`]);
+  // first answer degraded (no marker), redo answer clean (marker). High ctx so the
+  // (token-gated) canary gate fires.
+  const { fn, calls } = fakeRunner(['degraded answer no marker', `recovered ${CANARY}`], 200000);
   const r = await handle('refactor the classifier scoring function', { reg, persist: false, store: emptyStore, runTurn: fn, handoff: { dir } });
   assert.equal(calls.length, 2, 'exactly one redo');
   assert.equal(r.redone, true);
@@ -107,12 +110,22 @@ test('gate: a missing canary triggers handoff + flush + reseed + one redo', asyn
 test('gate: still-missing canary after redo relays with a degraded flag (max 1 redo)', async () => {
   const dir = tmpDir('deg');
   const reg = { current: 'ptah', sessions: { ptah: { sessionId: 's', started: true } }, recent: {} };
-  const { fn, calls } = fakeRunner(['no marker', 'still no marker']);
+  const { fn, calls } = fakeRunner(['no marker', 'still no marker'], 200000);
   const r = await handle('refactor the classifier', { reg, persist: false, store: emptyStore, runTurn: fn, handoff: { dir } });
   assert.equal(calls.length, 2, 'only one redo, no infinite loop');
   assert.equal(r.redone, true);
   assert.equal(r.degraded, true, 'honestly flagged degraded');
   rmSync(dir, { recursive: true, force: true });
+});
+
+test('gate: a missing canary at LOW context does NOT redo (the false-positive fix)', async () => {
+  const reg = { current: 'ptah', sessions: { ptah: { sessionId: 's', started: true } }, recent: {} };
+  // healthy-sized thread, short reply with no marker — must NOT be treated as degraded.
+  const { fn, calls } = fakeRunner(['Hi! What can I help you with today?'], 2700);
+  const r = await handle('does it pass now', { reg, persist: false, store: emptyStore, runTurn: fn });
+  assert.equal(calls.length, 1, 'single call — no wasteful redo at low context');
+  assert.equal(r.redone, false);
+  assert.equal(r.degraded, false);
 });
 
 test('gate: the mock path never triggers the canary gate', async () => {

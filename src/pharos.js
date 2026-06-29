@@ -91,13 +91,16 @@ export async function handle(prompt, opts = {}) {
   const run = opts.runTurn || runTurn;
   let turn = run(routed, turnPrompt, { mock, reg, settings: cfg });
 
-  // The canary gate. Late-but-better-than-nothing (Josh): if the Keeper's answer
-  // lost its marker, the warm thread is degraded — write a handoff, flush the
-  // session, and REDO once on a fresh session reseeded with continuity. Skipped on
-  // the mock path (no real model to judge). Max 1 redo, then relay with a ⚠ flag.
+  // The canary gate. Late-but-better-than-nothing (Josh): if a warm thread that's
+  // ALREADY heavy lost its marker, it's degraded — write a handoff, flush the session,
+  // and REDO once on a fresh session reseeded with continuity. Gated on isTokenLow so a
+  // healthy-sized thread that just didn't echo the marker on a short reply (e.g. "Hi!")
+  // is NOT treated as degraded — that false positive was re-running every turn (2× the
+  // latency) and discarding prewarmed sessions. Degradation only matters near the limit,
+  // which is exactly where the early gate also acts. Skipped on the mock path.
   let degraded = false;
   let redone = false;
-  if (!mock && !hasCanary(turn.text)) {
+  if (!mock && isTokenLow(turn.contextTokens || 0) && !hasCanary(turn.text)) {
     writeHandoff(routed, reg, opts.handoff);
     delete reg.sessions[routed]; // flush the degraded warm session
     const reseed = buildReseed(routed, aliasOf(routed), reg);
