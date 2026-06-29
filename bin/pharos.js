@@ -307,12 +307,23 @@ async function handleLine(line) {
 }
 
 function showPrompt() { rl.setPrompt(PROMPT); rl.prompt(); }
+
+// Serialize turns through a queue. Piped input (tests/mock) emits all its 'line'
+// events up front, so we must process them strictly one-at-a-time and finish the
+// in-flight turn before a later '/exit' can close — otherwise the turn is dropped.
+const queue = [];
+let processing = false;
+let closing = false;
+async function drain() {
+  if (processing) return;
+  processing = true;
+  while (queue.length && !closing) {
+    const keep = await handleLine(queue.shift());
+    if (!keep) { closing = true; rl.close(); }
+  }
+  processing = false;
+  if (!closing) showPrompt();
+}
 showPrompt();
-rl.on("line", async (line) => {
-  rl.pause();
-  const keep = await handleLine(line);
-  if (!keep) return rl.close();
-  rl.resume();
-  showPrompt();
-});
-rl.on("close", () => { console.log(`  ${C.dim}— Alexandria out.${C.reset}`); process.exit(0); });
+rl.on('line', (line) => { queue.push(line); drain(); });
+rl.on('close', () => { console.log(`  ${C.dim}— Alexandria out.${C.reset}`); process.exit(0); });
