@@ -22,6 +22,7 @@ import { drainInbox } from './inbox.js';
 import { plan as planFn, replan as replanFn } from './plan.js';
 import { makeElaborator } from './elaborate.js';
 import { runStep } from './step.js';
+import { detectDrift } from './drift.js';
 import {
   nextReady,
   doneConditionHolds,
@@ -121,6 +122,18 @@ export async function runLoop(goal, opts = {}) {
       state.boundariesSinceProgress = 0; // a step reached a terminal outcome → progress
       if (persist) savePlan(plan, opts);
       logLoop({ event: 'step', id: step.id, status: step.status, attempts: step.attempts }, ctx);
+
+      // Goal-drift check (complements the canary's quality-drift). Pure over what the
+      // boundary already knows; criticals are surfaced, all are logged. Most signals are
+      // P0-absent (no clock/cost yet) so only scope-creep / high-risk / repeated-failure
+      // can fire until P2 threads elapsed+cost.
+      const drift = detectDrift({
+        plan,
+        touched: (outcome.result && outcome.result.touched) || [],
+        failCount: plan.steps.filter((s) => s.status === 'parked').length,
+        riskPaths: opts.riskPaths,
+      }, opts);
+      if (drift.length) logLoop({ event: 'drift', alerts: drift }, ctx);
     } else {
       // A boundary with no step ran is a non-progress boundary — the watchdog ticks.
       state.boundariesSinceProgress += 1;
