@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Alexandria — sprite band (draft)</title>
+<style>
+  :root{ --bg:#070a12; --ink:#e8dcc0; --gold:#ffcf3f; --bronze:#b8862b; --ash:#8a8f9a; --sage:#7fc8a0; }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ height:100%; background:var(--bg); color:var(--ink);
+    font-family:ui-monospace,"SF Mono",Menlo,monospace; overflow:hidden; }
+  #app{ position:fixed; inset:0; display:flex; flex-direction:column; }
+
+  /* ---- the band ---- */
+  #band{ position:relative; height:188px; flex:0 0 auto;
+    border-bottom:1px solid rgba(184,134,43,.28);
+    transition:height .28s cubic-bezier(.4,0,.2,1); overflow:hidden; }
+  #band.collapsed{ height:30px; }
+  #band canvas{ position:absolute; inset:0; width:100%; height:100%;
+    image-rendering:pixelated; display:block; }
+  #band.collapsed canvas{ display:none; }
+
+  /* collapsed strip: row of mini lamps */
+  #strip{ position:absolute; inset:0; display:none; align-items:center; gap:14px;
+    padding:0 14px; background:linear-gradient(180deg,#0a0f1c,#070a12); }
+  #band.collapsed #strip{ display:flex; }
+  #strip .lamp{ font-size:13px; color:var(--ash); letter-spacing:.02em; }
+  #strip .lamp.on{ color:var(--gold); text-shadow:0 0 9px rgba(255,207,63,.7); }
+  #strip .brand{ margin-left:auto; font-size:10px; letter-spacing:.16em;
+    text-transform:uppercase; color:var(--bronze); }
+
+  /* collapse handle */
+  #handle{ position:absolute; top:7px; right:9px; z-index:6; font-size:11px;
+    color:var(--ash); background:rgba(8,10,18,.6); border:1px solid rgba(184,134,43,.3);
+    border-radius:7px; padding:3px 9px; cursor:pointer; user-select:none; }
+  #handle:hover{ color:var(--ink); border-color:rgba(184,134,43,.6); }
+
+  /* ---- the terminal below ---- */
+  #term{ flex:1 1 auto; min-height:0; display:flex; flex-direction:column;
+    padding:12px 18px 14px; overflow:hidden; }
+  #scroll{ flex:1; overflow-y:auto; font-size:13px; line-height:1.55; }
+  #scroll .u{ color:var(--ink); }
+  #scroll .g{ color:var(--sage); }
+  #scroll .meta{ color:var(--ash); }
+  #scroll .who{ color:var(--gold); }
+  #prompt{ display:flex; align-items:center; gap:9px; margin-top:8px;
+    border-top:1px solid rgba(184,134,43,.22); padding-top:11px; }
+  #beacon{ color:var(--gold); text-shadow:0 0 10px rgba(255,207,63,.8); font-size:16px; }
+  #chev{ color:var(--bronze); }
+  #inp{ flex:1; background:transparent; border:0; outline:0; color:var(--ink);
+    font:inherit; font-size:13px; }
+  #inp::placeholder{ color:var(--ash); }
+
+  /* demo controls */
+  #ctl{ position:absolute; bottom:8px; left:50%; transform:translateX(-50%); z-index:6;
+    display:flex; gap:5px; align-items:center; background:rgba(8,10,18,.5);
+    border:1px solid rgba(184,134,43,.25); border-radius:9px; padding:4px 6px;
+    backdrop-filter:blur(5px); }
+  #ctl .l{ font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--bronze); padding:0 3px; }
+  #ctl button{ font:inherit; font-size:11px; color:var(--ash); background:transparent;
+    border:1px solid transparent; border-radius:6px; padding:3px 7px; cursor:pointer; }
+  #ctl button:hover{ color:var(--ink); }
+  #ctl button.on{ color:#0b0c12; background:var(--gold); border-color:var(--gold); font-weight:600; }
+  #band.collapsed #ctl{ display:none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="band">
+    <canvas id="stage"></canvas>
+    <div id="strip"></div>
+    <div id="ctl"><span class="l">route</span><span id="ctlGods"></span></div>
+    <div id="handle">▾ gods</div>
+  </div>
+  <div id="term">
+    <div id="scroll"></div>
+    <div id="prompt">
+      <span id="beacon">⟡</span><span id="chev">›</span>
+      <input id="inp" placeholder="ask Alexandria…  (try: code · life · study · career · intake)" autofocus />
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================================
+// Alexandria — sprite band DRAFT.
+// A collapsible strip across the top: five full-body pixel god-Keepers wander a
+// starlit plaza. You DON'T click them — you type in the terminal below. Pharos
+// routes your line to a Keeper; that god stops, rises, glows, and casts its aura
+// while it "answers". Collapse the band (▾) and the terminal takes the space —
+// that's the "sprites OFF" state the real /settings toggle will control.
+// Sprites are drawn procedurally (full body + legs + feet, no mummy tail).
+// ============================================================================
+
+// ---- five Keepers ----------------------------------------------------------
+const ORDER=['ptah','thoth','ra','horus','anubis'];   // Ra centered, per the ref
+const LABEL ={ptah:'Ptah', thoth:'Thoth', ra:'Ra', horus:'Horus', anubis:'Anubis'};
+const DOMAIN={ptah:'code', thoth:'study', ra:'life', horus:'career', anubis:'intake'};
+const KEYS  ={code:'ptah', study:'thoth', life:'ra', career:'horus', intake:'anubis'};
+
+// per-god palette (skin/limbs, shade, cloth, gold, kilt, extras)
+const G={
+  ptah:  {skin:'#5fbf86',skinD:'#2f8f5f',cloth:'#2d578f',gold:'#e6a431',kilt:'#2d578f'},
+  thoth: {skin:'#5a9fd6',skinD:'#3a6f9f',cloth:'#2d578f',gold:'#e6a431',kilt:'#cfd0cb',beak:'#e6a431'},
+  ra:    {skin:'#e6a431',skinD:'#b56e19',cloth:'#b56e19',gold:'#f2c44c',kilt:'#b56e19',disk:'#ffd23f'},
+  horus: {skin:'#cfd0cb',skinD:'#9aa0a0',cloth:'#2d578f',gold:'#e6a431',kilt:'#2d578f',crown:'#f1d79b',red:'#bb2b14'},
+  anubis:{skin:'#7a4fb0',skinD:'#4a2f7b',cloth:'#9d64d6',gold:'#e6a431',kilt:'#9d64d6',ear:'#1a1426'},
+};
+
+// ---- pixel helpers ---------------------------------------------------------
+function rgb(h){h=h.replace('#','');return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];}
+
+function makeFigure(key,phase){
+  const W=24,H=34;
+  const cv=document.createElement('canvas'); cv.width=W; cv.height=H;
+  const ctx=cv.getContext('2d'); const img=ctx.createImageData(W,H); const d=img.data;
+  const px=(x,y,hex,a)=>{ if(x<0||y<0||x>=W||y>=H)return; const o=(y*W+x)*4; const c=rgb(hex);
+    d[o]=c[0];d[o+1]=c[1];d[o+2]=c[2];d[o+3]=a==null?255:a; };
+  const rect=(x0,y0,x1,y1,hex)=>{ for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)px(x,y,hex); };
+  drawBody(px,rect,key,phase);
+  drawHead(px,rect,key);
+  ctx.putImageData(img,0,0);
+  return outline(cv);
+}
+
+function drawBody(px,rect,key,phase){
+  const p=G[key];
+  // --- legs + feet (behind kilt). phase: 0 plant, 1 left-step, 2 right-step ---
+  const lx=9, rx=13;
+  const lF=phase===1?1:0, rF=phase===2?1:0, lL=phase===1?1:0, rL=phase===2?1:0;
+  rect(lx,25,lx+1,30, p.skin); rect(rx,25,rx+1,30, p.skin);     // shins
+  px(lx+1,27,p.skinD); px(rx+1,27,p.skinD);
+  rect(lx-1+lF,30-lL,lx+1+lF,31-lL, p.skinD);                   // left foot
+  rect(rx-1+rF,30-rL,rx+1+rF,31-rL, p.skinD);                   // right foot
+  // --- kilt ---
+  rect(8,21,15,24, p.kilt);
+  px(11,22,p.gold); px(12,23,p.gold);                          // pleat
+  rect(8,24,15,24, p.gold);                                    // hem
+  // --- torso (bare chest, body color) ---
+  rect(8,14,15,20, p.skin);
+  rect(14,14,15,20, p.skinD);                                  // right-side shade
+  px(11,17,p.skinD); px(12,18,p.skinD);                        // ab hint
+  rect(8,20,15,20, p.gold);                                    // belt
+  // --- usekh collar ---
+  rect(8,13,15,13, p.gold); rect(9,14,14,14, p.gold);
+  rect(11,12,12,13, p.skin);                                   // neck
+  // --- arms ---
+  rect(6,14,7,20, p.skin); px(6,15,p.skinD); rect(6,21,7,22,p.skinD);
+  rect(16,14,17,20, p.skin); px(17,15,p.skinD); rect(16,21,17,22,p.skinD);
+}
+
+function drawHead(px,rect,key){
+  const p=G[key];
+  if(key==='ptah'){                         // human + nemes headcloth
+    rect(8,3,15,11, p.cloth);
+    rect(9,5,14,11, p.skin);
+    rect(9,4,14,4, p.gold);                 // headband
+    [6,8,10].forEach(y=>{ px(8,y,p.gold); px(15,y,p.gold); });  // lappet stripes
+    px(11,7,'#1a1a22'); px(13,7,'#1a1a22'); px(12,9,p.skinD);
+    rect(11,11,12,12,p.gold);               // braided beard
+  } else if(key==='thoth'){                 // ibis — long curved beak
+    rect(10,4,14,9, p.skin); rect(13,4,14,9,p.skinD);
+    px(10,3,p.skin);
+    px(11,6,'#1a1a22');
+    px(14,8,p.beak);px(15,9,p.beak);px(16,9,p.beak);px(16,10,p.beak);px(15,11,p.beak);px(15,12,p.beak);
+  } else if(key==='ra'){                     // falcon + solar disk
+    for(let y=-3;y<=3;y++)for(let x=-3;x<=3;x++) if(x*x+y*y<=9) px(12+x,3+y,p.disk);
+    px(12,3,'#fff3c0'); px(11,2,'#ffe9a0'); px(13,4,'#ffe9a0');
+    rect(10,6,14,11,p.skin); rect(13,6,14,11,p.skinD);
+    px(11,8,'#1a1a22'); px(12,8,'#6b3a12');
+    px(14,9,p.skinD); px(15,9,p.skinD); px(15,10,'#1a1a22');     // hooked beak
+  } else if(key==='horus'){                  // falcon + white crown
+    px(12,0,p.crown); rect(11,1,13,2,p.crown); rect(10,3,14,5,p.crown);
+    px(12,1,p.red); px(11,4,p.red);
+    rect(10,6,14,11,p.skin); rect(13,6,14,11,p.skinD);
+    px(11,8,'#1a1a22'); px(12,8,p.red);
+    px(14,9,p.gold); px(15,9,p.gold); px(15,10,p.skinD);          // beak
+  } else if(key==='anubis'){                 // jackal — tall ears + snout
+    rect(9,0,10,6,p.ear); rect(13,0,14,6,p.ear);
+    px(10,2,p.cloth); px(13,2,p.cloth);
+    rect(10,6,14,11,p.skin); rect(13,6,14,11,p.skinD);
+    rect(14,9,16,10,p.skinD); px(16,9,'#1a1a22');                 // snout + nose
+    px(12,8,p.gold);
+  }
+}
+
+// 1px transparent pad + black silhouette outline; returns {base,gold,w,h}
+function outline(src){
+  const W=src.width,H=src.height, oc=src.getContext('2d');
+  const sd=oc.getImageData(0,0,W,H).data;
+  const w=W+2,h=H+2;
+  const base=document.createElement('canvas'); base.width=w; base.height=h;
+  const b=base.getContext('2d'); const out=b.createImageData(w,h); const od=out.data;
+  const A=(x,y)=>{ if(x<1||y<1||x>=w-1||y>=h-1)return 0; return sd[((y-1)*W+(x-1))*4+3]; };
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    const o=(y*w+x)*4;
+    if(A(x,y)){ const s=((y-1)*W+(x-1))*4; od[o]=sd[s];od[o+1]=sd[s+1];od[o+2]=sd[s+2];od[o+3]=255; }
+    else if(A(x-1,y)||A(x+1,y)||A(x,y-1)||A(x,y+1)||A(x-1,y-1)||A(x+1,y-1)||A(x-1,y+1)||A(x+1,y+1)){
+      od[o]=8;od[o+1]=8;od[o+2]=14;od[o+3]=255; }
+  }
+  b.putImageData(out,0,0);
+  const gold=document.createElement('canvas'); gold.width=w; gold.height=h;
+  const g=gold.getContext('2d'); g.drawImage(base,0,0);
+  g.globalCompositeOperation='source-in'; g.fillStyle='#ffe08a'; g.fillRect(0,0,w,h);
+  return {base,gold,w,h};
+}
+
+// frames: [plant, leftStep, rightStep]
+const FR={}; ORDER.forEach(k=>FR[k]=[0,1,2].map(ph=>makeFigure(k,ph)));
+
+// ---- scene state -----------------------------------------------------------
+const cv=document.getElementById('stage'), ctx=cv.getContext('2d');
+const BH=92, MARGIN=18, GROUND=BH-14, SCALE=2.0;
+let BW=480, W=0,H=0, DPR=1, buf,bx;
+function ensureBuf(){ if(!buf){ buf=document.createElement('canvas'); bx=buf.getContext('2d'); } buf.width=BW; buf.height=BH; }
+
+const mob=ORDER.map((key,i)=>({
+  key,i, x:0, dir:i%2?1:-1, speed:0, walked:0, pause:0, active:false, hover:0, dim:0, init:false,
+}));
+
+function layout(){
+  W=cv.clientWidth; H=cv.clientHeight; if(!W||!H)return;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+  BW=Math.max(160,Math.round(W*BH/H));
+  const span=(BW-2*MARGIN)/ORDER.length;
+  mob.forEach((m,i)=>{ if(!m.init){ m.x=MARGIN+span*(i+0.5); m.init=true; }
+    m.x=Math.max(MARGIN,Math.min(BW-MARGIN,m.x)); });
+}
+window.addEventListener('resize',layout);
+
+const anyActive=()=>mob.some(m=>m.active);
+function activate(key){ mob.forEach(m=>m.active=(m.key===key)); }
+
+// pseudo-random wander (no Math.random needed for determinism in draft)
+function noise(s){ const x=Math.sin(s*127.1)*43758.5453; return x-Math.floor(x); }
+
+let last=0;
+function step(t){
+  const dt=Math.min(.05,(t-last)/1000||0); last=t;
+  const any=anyActive();
+  mob.forEach(m=>{
+    m.dim += ((any&&!m.active?1:0)-m.dim)*Math.min(1,dt*6);
+    if(m.active){
+      m.hover += (1-m.hover)*Math.min(1,dt*5);
+      m.speed += (0-m.speed)*Math.min(1,dt*6);
+    } else {
+      m.hover += (0-m.hover)*Math.min(1,dt*5);
+      // wander: walk a while, pause a while
+      if(m.pause>0){ m.pause-=dt; m.speed+=(0-m.speed)*Math.min(1,dt*4); }
+      else{
+        m.speed += (10-m.speed)*Math.min(1,dt*3);
+        m.x += m.dir*m.speed*dt;
+        m.walked += m.speed*dt;
+        if(m.x<MARGIN){ m.x=MARGIN; m.dir=1; } else if(m.x>BW-MARGIN){ m.x=BW-MARGIN; m.dir=-1; }
+        // occasional turn / pause
+        const r=noise(m.i*9.7+Math.floor(t/900));
+        if(r>0.985){ m.pause=0.7+noise(t)*1.4; }
+        else if(r<0.004){ m.dir*=-1; }
+      }
+    }
+  });
+  draw(t/1000);
+  requestAnimationFrame(step);
+}
+
+function draw(time){
+  if(!W||!H){ layout(); }
+  ensureBuf();
+  bx.imageSmoothingEnabled=false; bx.globalCompositeOperation='source-over'; bx.filter='none';
+  // --- starry sky ---
+  const sky=bx.createLinearGradient(0,0,0,BH);
+  sky.addColorStop(0,'#05080f'); sky.addColorStop(.7,'#0a1322'); sky.addColorStop(1,'#0e1b2c');
+  bx.fillStyle=sky; bx.fillRect(0,0,BW,BH);
+  for(let i=0;i<90;i++){ const sx=(i*73)%BW, sy=(i*41)%(GROUND-6);
+    const tw=noise(i+Math.floor(time*1.5)); if(tw>.5){ bx.fillStyle=`rgba(210,224,255,${0.3+tw*0.5})`; bx.fillRect(sx,sy,1,1); } }
+  // faint Pharos beam, top-right (brand wink)
+  const bg=bx.createLinearGradient(BW,0,BW*0.55,GROUND*0.5);
+  bg.addColorStop(0,'rgba(255,225,150,.10)'); bg.addColorStop(1,'rgba(255,225,150,0)');
+  bx.fillStyle=bg; bx.beginPath(); bx.moveTo(BW,0); bx.lineTo(BW,20); bx.lineTo(BW*0.5,GROUND*0.55); bx.closePath(); bx.fill();
+  // --- ground line ---
+  bx.fillStyle='#16202f'; bx.fillRect(0,GROUND+1,BW,BH-GROUND);
+  bx.fillStyle='rgba(184,134,43,.18)'; bx.fillRect(0,GROUND,BW,1);
+
+  // --- gods (active drawn last) ---
+  const order=[...mob].sort((a,b)=>(a.active?1:0)-(b.active?1:0));
+  for(const m of order) drawGod(m,time);
+
+  // --- blit buffer to screen ---
+  ctx.setTransform(DPR,0,0,DPR,0,0); ctx.clearRect(0,0,W,H);
+  ctx.imageSmoothingEnabled=false; ctx.drawImage(buf,0,0,BW,BH,0,0,W,H);
+  // --- crisp labels following each god ---
+  ctx.textAlign='center';
+  const kx=W/BW, ky=H/BH;
+  for(const m of mob){
+    const x=m.x*kx, y=(GROUND+10)*ky;
+    ctx.font='600 11px ui-monospace,monospace';
+    ctx.fillStyle=m.active?'rgba(255,210,90,1)':(anyActive()?`rgba(150,158,172,${0.5-m.dim*0.2})`:'rgba(220,210,180,.9)');
+    if(m.active){ ctx.shadowColor='rgba(255,200,70,.9)'; ctx.shadowBlur=9; } else ctx.shadowBlur=0;
+    ctx.fillText(LABEL[m.key],x,y); ctx.shadowBlur=0;
+    ctx.font='9px ui-monospace,monospace';
+    ctx.fillStyle=m.active?'rgba(255,190,70,.85)':'rgba(184,134,43,.5)';
+    ctx.fillText(DOMAIN[m.key],x,y+11);
+  }
+}
+
+function drawGod(m,time){
+  const ph = m.active ? 0 : (m.speed>2 ? [1,0,2,0][Math.floor(m.walked/4)%4] : 0);
+  const f=FR[m.key][ph], w=f.w*SCALE, h=f.h*SCALE;
+  const bob = m.active ? Math.sin(time*2.2+m.i)*1.6 : 0;
+  const lift = m.hover*9 + bob;
+  const cx=m.x, footY=GROUND;
+  const dx=Math.round(cx-w/2), dy=Math.round(footY-h-lift);
+  // shadow
+  bx.save(); bx.globalCompositeOperation='source-over';
+  bx.fillStyle=`rgba(0,0,0,${0.30-m.hover*0.12})`;
+  bx.beginPath(); bx.ellipse(cx,footY+1,w*0.30*(1-m.hover*0.25),2.2,0,0,Math.PI*2); bx.fill(); bx.restore();
+  // active aura + ripple
+  if(m.hover>0.02){
+    bx.save(); bx.globalCompositeOperation='lighter';
+    const pulse=0.6+0.4*Math.sin(time*3+m.i);
+    const gx=cx, gy=dy+h*0.42, R=h*0.7*m.hover;
+    const grad=bx.createRadialGradient(gx,gy,1,gx,gy,R);
+    grad.addColorStop(0,`rgba(255,216,96,${0.5*pulse*m.hover})`);
+    grad.addColorStop(.5,`rgba(255,184,52,${0.2*pulse*m.hover})`);
+    grad.addColorStop(1,'rgba(255,170,40,0)');
+    bx.fillStyle=grad; bx.fillRect(gx-R,gy-R,R*2,R*2);
+    for(let k=0;k<3;k++){ const phs=((time*0.5)+k/3)%1, er=10*(0.5+phs*1.6)*m.hover;
+      bx.beginPath(); bx.ellipse(cx,footY,er,er*0.32,0,0,Math.PI*2);
+      bx.strokeStyle=`rgba(255,206,80,${(1-phs)*0.7*m.hover})`; bx.lineWidth=1; bx.stroke(); }
+    bx.restore();
+  }
+  // sprite (flip to face travel dir)
+  const flip = m.dir<0 && !m.active;
+  bx.save();
+  if(m.dim>0.02) bx.filter=`brightness(${(1-m.dim*0.55).toFixed(2)}) saturate(${(1-m.dim*0.4).toFixed(2)})`;
+  if(flip){ bx.translate(dx+w,dy); bx.scale(-1,1); bx.drawImage(f.base,0,0,w,h); }
+  else bx.drawImage(f.base,dx,dy,w,h);
+  bx.restore();
+  // gold sheen when active
+  if(m.hover>0.02){
+    bx.save(); bx.globalCompositeOperation='lighter';
+    bx.globalAlpha=(0.14+0.16*(0.5+0.5*Math.sin(time*4+m.i)))*m.hover;
+    bx.drawImage(f.gold,dx,dy,w,h); bx.restore(); bx.globalAlpha=1;
+  }
+}
+
+// ---- collapsed strip (mini lamps) ------------------------------------------
+const strip=document.getElementById('strip');
+ORDER.forEach(k=>{ const s=document.createElement('span'); s.className='lamp'; s.dataset.k=k;
+  s.innerHTML=`⟡ <span style="opacity:.7">${DOMAIN[k]}</span>`; strip.appendChild(s); });
+const brand=document.createElement('span'); brand.className='brand'; brand.textContent='Pharos routes'; strip.appendChild(brand);
+function syncStrip(){ [...strip.querySelectorAll('.lamp')].forEach(s=>{
+  const m=mob.find(x=>x.key===s.dataset.k); s.classList.toggle('on',!!(m&&m.active)); }); }
+
+// ---- demo route controls ---------------------------------------------------
+const ctlGods=document.getElementById('ctlGods');
+ORDER.forEach(k=>{ const b=document.createElement('button'); b.textContent=LABEL[k]; b.dataset.k=k;
+  b.onclick=()=>route(k,'(demo route)'); ctlGods.appendChild(b); });
+function syncCtl(){ [...ctlGods.children].forEach(b=>b.classList.toggle('on', !!mob.find(m=>m.key===b.dataset.k&&m.active))); }
+
+// ---- terminal --------------------------------------------------------------
+const scroll=document.getElementById('scroll'), inp=document.getElementById('inp');
+function line(html){ const d=document.createElement('div'); d.innerHTML=html; scroll.appendChild(d); scroll.scrollTop=scroll.scrollHeight; }
+const REPLY={
+  ptah:'parsing the call graph — that change touches three downstream symbols.',
+  thoth:'I have the syllabus; the problem set is due Thursday. Drafting an outline.',
+  ra:'noted in the journal. Want me to surface today’s study anchor too?',
+  horus:'pulled the Juniper thread — here are the two open prep gaps.',
+  anubis:'new request logged. I’ll route it to the right Keeper.',
+};
+function route(key,echo){
+  activate(key); syncStrip(); syncCtl();
+  if(echo) line(`<span class="meta">⟡ ›</span> <span class="u">${echo}</span>`);
+  line(`<span class="who">${LABEL[key]}</span> <span class="meta">· ${DOMAIN[key]}</span> <span class="g">${REPLY[key]}</span>`);
+}
+inp.addEventListener('keydown',e=>{
+  if(e.key!=='Enter'||!inp.value.trim())return;
+  const text=inp.value.trim(); inp.value='';
+  line(`<span class="meta">⟡ ›</span> <span class="u">${text.replace(/</g,'&lt;')}</span>`);
+  const word=text.toLowerCase();
+  let key = Object.keys(KEYS).find(d=>word.includes(d)) ;
+  key = key?KEYS[key] : ORDER[(Math.abs(hash(text)))%ORDER.length];
+  setTimeout(()=>{ activate(key); syncStrip(); syncCtl();
+    line(`<span class="who">${LABEL[key]}</span> <span class="meta">· ${DOMAIN[key]}</span> <span class="g">${REPLY[key]}</span>`); }, 260);
+});
+function hash(s){ let h=0; for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))|0; return h; }
+
+// ---- collapse handle -------------------------------------------------------
+const band=document.getElementById('band'), handle=document.getElementById('handle');
+handle.onclick=()=>{ const c=band.classList.toggle('collapsed'); handle.textContent=c?'▸ gods':'▾ gods';
+  syncStrip(); setTimeout(layout,300); };
+
+// ---- boot ------------------------------------------------------------------
+line('<span class="meta">⟡ ALEXANDRIA · Pharos routes · Keepers hold · Alexandria remembers</span>');
+line('<span class="meta">five Keepers warming on the plaza above. type to summon one.</span>');
+layout(); requestAnimationFrame(step);
+</script>
+</body>
+</html>
