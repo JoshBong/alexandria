@@ -1,4 +1,4 @@
-# Alexandria
+# project alexandria
 
 A personal AI orchestration layer on top of Claude Code.
 
