@@ -31,6 +31,7 @@ const TTY = !!process.stdout.isTTY;
 const g = (n) => (TTY ? `\x1b[38;5;${n}m` : ''); // 256-colour
 const C = {
   reset: TTY ? '\x1b[0m' : '', dim: TTY ? '\x1b[2m' : '', b: TTY ? '\x1b[1m' : '',
+  white: TTY ? '\x1b[97m' : '', // bright white — the active Keeper in the roster
   gold: g(220), // bright gold — primary accent
   deep: g(178), // deep gold
   bronze: g(136), // bronze — rules / muted
@@ -543,11 +544,11 @@ async function handleLine(line) {
   // Update the persistent bottom-border HUD: current Keeper + TOTAL context against the
   // real context WINDOW (not the flush trigger — that was the confusing 150k "max").
   if (boxCtl) {
-    const ctxTotal = r.contextTokens || 0;
     const win = cfg.contextWindow || contextWindow();
-    const pctCtx = win ? Math.round((ctxTotal / win) * 100) : 0;
-    const fmt = (n) => (n >= 1000 ? `${(n / 1000).toFixed(0)}k` : `${n}`);
-    boxCtl.setStatus(`${r.routed} · ctx ${fmt(ctxTotal)}/${fmt(win)} (${pctCtx}%)`);
+    // Per-Keeper SESSION load (each Keeper is its own `claude` session), not a global
+    // meter — and flag a fresh/reseeded session so a sudden DROP reads as "flushed",
+    // not "broken". The HUD renders one figure per active Keeper from these.
+    boxCtl.setStatus(r.routed, { ctx: r.contextTokens || 0, win, reseed: !!r.fresh });
   }
   return true;
 }
@@ -570,24 +571,19 @@ async function startBox() {
   const w = (s) => out0.write(s);
   const bar = () => `  ${C.bronze}${rule()}${C.reset}`;
 
-  // ---- the sticky top navbar (Josh's request) ----
-  // The roster pins to the TOP rows the SAME way the input box pins to the bottom: the
-  // DECSTBM scroll region is started BELOW these rows (regionTop), so the transcript
-  // scrolls UNDER the bar while it stays lit on top. NAV_H rows: the banner + a divider.
-  const NAV_H = 2; // banner row + rule row
-  const regionTop = () => NAV_H + 1; // the scroll region's first row (1..NAV_H are frozen)
-  const navRoster = KEEPERS.filter((k) => k.active)
-    .map((k) => `${C.deep}⟡${C.reset} ${C.b}${k.id[0].toUpperCase() + k.id.slice(1)}${C.reset}`)
-    .join('  ');
-  const drawNav = () => {
-    w(`\x1b[1;1H\x1b[2K  ${C.b}${C.gold}✦ Alexandria${C.reset}   ${navRoster}`);
-    w(`\x1b[2;1H\x1b[2K  ${C.bronze}${rule()}${C.reset}`);
-  };
+  // The scroll region's top is row 1 — content scrolls into NATIVE scrollback (a region
+  // anchored below row 1 silently discards scrolled-off lines, which is exactly what broke
+  // scroll-up and smeared the old frozen top navbar through the transcript). Only the
+  // BOTTOM box is pinned; the roster lives in its HUD border (botBorder) with the active
+  // Keeper highlighted, so "who answered" is always visible without freezing any top rows.
+  const regionTop = 1;
 
   let buf = '';
   let curIdx = 0;
   const prefix = PROMPT;
-  let status = ''; // persistent HUD on the box's bottom border (Keeper + total context)
+  let activeId = null; // the Keeper that answered last — highlighted bold+white in the HUD roster
+  const ctxById = new Map(); // keeperId(lower) → { ctx, reseed } : each Keeper's OWN session load
+  let winTok = 0; // the context window (denominator), shown once at the end of the roster
   let spinning = false; // a thinking line is reserved on the row just above the box
   let menu = null; // menu.js reducer state while the /settings menu owns the keyboard
   let menuView = null; // row snapshot the reducer reads; rebuilt after each write
@@ -600,9 +596,33 @@ async function startBox() {
   // otherwise the (wrapped) input line.
   const sync = () => { boxH = (menu ? menuLines(menu, menuView).length : measure().rows.length) + 2; L = layout(out0.rows, boxH); };
 
+  // The persistent roster: every active Keeper with ITS OWN session load (each Keeper is a
+  // separate `claude` session, so there's no single global figure), the one that just
+  // answered bold+white and the rest grey. A `↺` after a load means that session was fresh/
+  // reseeded this turn — so a drop reads as "flushed", not a broken meter. The window
+  // (denominator) is shown once at the end.
+  const fmtK = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`);
+  const hudStat = () => {
+    const roster = KEEPERS.filter((k) => k.active).map((k) => {
+      const name = k.id[0].toUpperCase() + k.id.slice(1);
+      const rec = ctxById.get(k.id.toLowerCase());
+      const load = rec ? ` ${fmtK(rec.ctx)}${rec.reseed ? '↺' : ''}` : '';
+      const body = `${name}${load}`;
+      return activeId && k.id.toLowerCase() === activeId.toLowerCase()
+        ? `${C.b}${C.white}${body}${C.reset}`
+        : `${C.gray}${body}${C.reset}`;
+    }).join(' ');
+    // The full window meter for the active Keeper (the form you liked: ctx 34k/200k (17%)),
+    // shown once at the end after the per-Keeper roster.
+    const rec = activeId ? ctxById.get(activeId.toLowerCase()) : null;
+    if (rec && winTok) {
+      const pct = Math.round((rec.ctx / winTok) * 100);
+      return `${roster} ${C.dim}· ctx ${fmtK(rec.ctx)}/${fmtK(winTok)} (${pct}%)${C.reset}`;
+    }
+    return winTok ? `${roster} ${C.dim}· /${fmtK(winTok)}${C.reset}` : roster;
+  };
   const botBorder = () => {
-    if (!status) return bar();
-    const stat = `${C.dim}${status}${C.reset}`;
+    const stat = hudStat();
     const rail = Math.max(2, W() - visLen(stat) - 3);
     return `  ${C.bronze}${'─'.repeat(rail)}${C.reset} ${stat} ${C.bronze}─${C.reset}`;
   };
@@ -612,18 +632,17 @@ async function startBox() {
   // EXCLUDED from the scroll region — so streamed output (echoes, answers) can never land
   // on the spinner's row. This is what stops queued prompts from being overwritten.
   // Clamp the box's top row so a box taller than the terminal (e.g. the /settings menu in
-  // a very short window) still draws from an on-screen row just under the navbar instead
-  // of at a non-positive absolute row (which corrupts the draw).
-  const boxTopRow = () => Math.max(regionTop() + 1, out0.rows - boxH + 1);
+  // a very short window) still draws from an on-screen row (leaving at least row 1 for the
+  // transcript) instead of at a non-positive absolute row (which corrupts the draw).
+  const boxTopRow = () => Math.max(regionTop + 1, out0.rows - boxH + 1);
   const contentBottom = () => Math.max(1, boxTopRow() - 1 - (spinning ? 1 : 0)); // last scrolling row
   const spinnerRow = () => boxTopRow() - 1;
-  const setRegion = () => w(`\x1b[${regionTop()};${contentBottom()}r`);
+  const setRegion = () => w(`\x1b[${regionTop};${contentBottom()}r`);
   const placeCursor = () => { const m = measure(); w(`\x1b[${boxTopRow() + 1 + m.cursorRow};${m.cursorCol + 1}H`); };
 
   const drawBox = () => {
     sync();
     setRegion(); // region matched to box height (+ spinner row when thinking)
-    drawNav(); // repaint the frozen top bar (cheap; keeps it lit through every redraw)
     const top = boxTopRow();
     lastBoxTop = top; lastBoxH = boxH; // remember this footprint so a resize can wipe it
     w(`\x1b[${top};1H\x1b[2K${bar()}`);
@@ -642,7 +661,11 @@ async function startBox() {
     w(`\x1b[${top + 1 + m.rows.length};1H\x1b[2K${botBorder()}`);
     w(`\x1b[${top + 1 + m.cursorRow};${m.cursorCol + 1}H`);
   };
-  const setStatus = (s) => { status = s; drawBox(); };
+  const setStatus = (active, info) => {
+    activeId = active;
+    if (info && active) { ctxById.set(active.toLowerCase(), { ctx: info.ctx || 0, reseed: !!info.reseed }); winTok = info.win || winTok; }
+    drawBox();
+  };
 
   // Print into the scrolling transcript above the box. Natural scroll idiom: each line
   // scrolls the region up by one and prints at its bottom — so every echo and answer is
@@ -650,7 +673,7 @@ async function startBox() {
   const out = (s = '') => {
     sync();
     const bottom = contentBottom();
-    w(`\x1b[${regionTop()};${bottom}r`);
+    w(`\x1b[${regionTop};${bottom}r`);
     for (const ln of String(s).split('\n')) {
       w(`\x1b[${bottom};1H\n`);
       w(`\x1b[${bottom};1H\x1b[2K${ln}`);
@@ -666,6 +689,15 @@ async function startBox() {
     const t0 = Date.now();
     const seed = Math.floor(Math.random() * VERBS.length);
     let i = 0;
+    // The just-submitted line was echoed onto the row that's about to become the spinner
+    // row (when idle, contentBottom == spinnerRow). Scroll that row up into the permanent
+    // transcript FIRST, so the spinner's clear doesn't eat the echo — this is the bug where
+    // "my text disappears after I type it". A blank row here just scrolls harmlessly.
+    if (!spinning) {
+      const sr = spinnerRow();
+      w(`\x1b[${regionTop};${sr}r`); // region down to the soon-to-be spinner row
+      w(`\x1b[${sr};1H\n`); // scroll it up one: the echo moves into the transcript, sr goes blank
+    }
     spinning = true;
     drawBox(); // reserve the spinner row (shrinks the scroll region by one)
     const paint = () => {
@@ -695,7 +727,6 @@ async function startBox() {
     w('\x1b[r'); // release the scroll region
     const top = boxTopRow();
     for (let k = -1; k < boxH; k += 1) w(`\x1b[${top + k};1H\x1b[2K`); // clear spinner row + box rows
-    for (let k = 1; k <= NAV_H; k += 1) w(`\x1b[${k};1H\x1b[2K`); // clear the frozen top navbar rows
     w(`\x1b[${top};1H\x1b[?25h`);
     out0.removeListener('resize', onResize);
     if (stdin.setRawMode) stdin.setRawMode(false);

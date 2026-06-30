@@ -36,6 +36,19 @@ test('contextTokensOf: missing fields and non-objects default to 0 (safe directi
   assert.equal(contextTokensOf({ input_tokens: 'nope' }), 0);
 });
 
+test('contextTokensOf: takes the PEAK iteration, not the final-call usage', () => {
+  // a tool-use turn: top-level usage is the small final call, but an earlier call
+  // carried the full resident context. The peak (24000) must win, not the flat 1050.
+  const usage = {
+    input_tokens: 100, cache_read_input_tokens: 900, cache_creation_input_tokens: 50,
+    iterations: [
+      { input_tokens: 200, cache_read_input_tokens: 20000, cache_creation_input_tokens: 3800 }, // 24000
+      { input_tokens: 100, cache_read_input_tokens: 900, cache_creation_input_tokens: 50 },      // 1050 (final)
+    ],
+  };
+  assert.equal(contextTokensOf(usage), 24000, 'peak call across the turn, not the final small one');
+});
+
 test('tokenLimit: env override wins, junk falls back to the default', () => {
   assert.equal(tokenLimit({ ALEXANDRIA_TOKEN_LIMIT: '120000' }), 120000);
   assert.equal(tokenLimit({ ALEXANDRIA_TOKEN_LIMIT: 'banana' }), 150000, 'junk → default');

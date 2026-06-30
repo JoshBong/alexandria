@@ -42,14 +42,21 @@ export function contextWindow(env = process.env) {
 // --resume, the bulk of the replayed thread shows up as cache reads, so all three
 // input buckets count. Missing fields default to 0 (older CLI / mock → load 0 →
 // gate never fires, which is the safe direction).
+//
+// A single turn can make SEVERAL model calls (tool use) — `usage.iterations` lists
+// each, and the top-level `usage` the CLI reports is just ONE of them (effectively
+// the final call). When a turn ends on a small call, that final usage UNDER-reads
+// the resident context. The true load is the PEAK call's input across the turn, so
+// we max over `iterations` when present and fall back to the flat usage otherwise.
 export function contextTokensOf(usage) {
   if (!usage || typeof usage !== 'object') return 0;
   const n = (v) => (Number.isFinite(v) ? v : 0);
-  return (
-    n(usage.input_tokens) +
-    n(usage.cache_read_input_tokens) +
-    n(usage.cache_creation_input_tokens)
-  );
+  const load = (u) =>
+    n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens);
+  if (Array.isArray(usage.iterations) && usage.iterations.length) {
+    return Math.max(...usage.iterations.map(load));
+  }
+  return load(usage);
 }
 
 // EARLY trigger: is this turn's context load at/over the limit? A disabled limit
