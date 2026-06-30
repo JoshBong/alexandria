@@ -80,6 +80,23 @@ test('wrapInput: cursor gets a fresh row exactly at a wrap boundary', () => {
   assert.ok(r.rows.length >= 2); // a row exists for the cursor
 });
 
+test('wrapInput: a hard newline splits into logical rows, cursor follows', () => {
+  const r = wrapInput('ab\ncd', 3, 6, 2, 80); // curIdx 3 = just after the \n, before 'c'
+  assert.deepEqual(r.rows, ['ab', 'cd']);
+  assert.equal(r.cursorRow, 1); // second logical line
+  assert.equal(r.cursorCol, 2); // at the gutter, before 'c'
+  const before = wrapInput('ab\ncd', 2, 6, 2, 80); // curIdx 2 = end of first line, before \n
+  assert.equal(before.cursorRow, 0);
+  assert.equal(before.cursorCol, 8); // 6 (prefix) + 2
+});
+
+test('wrapInput: a trailing newline gives an empty continuation row for the cursor', () => {
+  const r = wrapInput('ab\n', 3, 6, 2, 80);
+  assert.deepEqual(r.rows, ['ab', '']);
+  assert.equal(r.cursorRow, 1);
+  assert.equal(r.cursorCol, 2);
+});
+
 test('visualRows counts wrap', () => {
   assert.equal(visualRows('', 80), 1);
   assert.equal(visualRows('x'.repeat(80), 80), 1);

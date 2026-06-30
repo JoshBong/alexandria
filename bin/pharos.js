@@ -519,6 +519,10 @@ async function handleLine(line) {
   spin.stop();
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   const arrow = r.switched ? `${C.gold}↪${C.reset}` : `${C.gray}·${C.reset}`;
+  // Translate the classifier's internal reason codes into plain words for the header.
+  // 'argmax' (a confident keyword win) is the quiet default → show nothing.
+  const NOTE = { llm: 'routed by Pharos', argmax: '', 'sticky-below-floor': 'stayed put', 'sticky-hysteresis': 'stayed put', 'below-floor->intake': 'unclear → intake' };
+  const note = NOTE[r.note] !== undefined ? NOTE[r.note] : r.note;
   const recall = r.recalled?.length ? ` ${C.dim}· recalled ${r.recalled.length}${C.reset}` : '';
   const flush = r.redone ? (r.degraded ? ` ${C.red}· ⚠ degraded${C.reset}` : ` ${C.green}· reseeded${C.reset}`) : '';
   const early = r.compacting ? ` ${C.deep}· ⟳ pre-compacted${C.reset}` : '';
@@ -530,7 +534,7 @@ async function handleLine(line) {
   const turnTok = r.turnTokens || ((u.input_tokens || 0) + (u.output_tokens || 0));
   const tok = turnTok >= 1000 ? `${(turnTok / 1000).toFixed(1)}k` : `${turnTok}`;
   const meter = `  ${C.gray}⧖ ${secs}s${turnTok ? ` ${C.dim}·${C.gray} ◈ ${tok} tok` : ''}${C.reset}`;
-  console.log(`  ${arrow} ${C.b}${r.routed}${C.reset} ${C.dim}(${r.alias})${C.reset} ${C.gray}${r.note}${r.fresh ? ' · new' : ''}${C.reset}${recall}${flush}${early}${meter}`);
+  console.log(`  ${arrow} ${C.b}${r.routed}${C.reset} ${C.dim}(${r.alias})${C.reset} ${C.gray}${note}${r.fresh ? `${note ? ' · ' : ''}new` : ''}${C.reset}${recall}${flush}${early}${meter}`);
   if (showMetrics) printMetrics(r);
   console.log('');
   // Collapse long fenced code blocks before printing — a Keeper answer with an 80-line
@@ -576,7 +580,7 @@ async function startBox() {
   // scroll-up and smeared the old frozen top navbar through the transcript). Only the
   // BOTTOM box is pinned; the roster lives in its HUD border (botBorder) with the active
   // Keeper highlighted, so "who answered" is always visible without freezing any top rows.
-  const regionTop = 1;
+  const regionTop = 2; // row 1 is the pinned top navbar (active-Keeper highlight); transcript scrolls below it
 
   let buf = '';
   let curIdx = 0;
@@ -610,24 +614,26 @@ async function startBox() {
   // reseeded this turn — so a drop reads as "flushed", not a broken meter. The window
   // (denominator) is shown once at the end.
   const fmtK = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`);
-  const hudStat = () => {
+  // TOP navbar (pinned row 1): the active-Keeper roster — the one that just answered is
+  // bold+white, the rest grey. No numbers up here; "who's active" is the only signal.
+  const navBar = () => {
     const roster = KEEPERS.filter((k) => k.active).map((k) => {
       const name = k.id[0].toUpperCase() + k.id.slice(1);
-      const rec = ctxById.get(k.id.toLowerCase());
-      const load = rec ? ` ${fmtK(rec.ctx)}${rec.reseed ? '↺' : ''}` : '';
-      const body = `${name}${load}`;
       return activeId && k.id.toLowerCase() === activeId.toLowerCase()
-        ? `${C.b}${C.white}${body}${C.reset}`
-        : `${C.gray}${body}${C.reset}`;
-    }).join(' ');
-    // The full window meter for the active Keeper (the form you liked: ctx 34k/200k (17%)),
-    // shown once at the end after the per-Keeper roster.
+        ? `${C.b}${C.white}${name}${C.reset}`
+        : `${C.gray}${name}${C.reset}`;
+    }).join('  ');
+    return `  ${roster}`;
+  };
+  const drawNav = () => w(`\x1b[1;1H\x1b[2K${navBar()}`); // absolute row 1, outside the scroll region
+  // BOTTOM border: just the active Keeper's context meter (ctx 34k/200k (17%)).
+  const hudStat = () => {
     const rec = activeId ? ctxById.get(activeId.toLowerCase()) : null;
     if (rec && winTok) {
       const pct = Math.round((rec.ctx / winTok) * 100);
-      return `${roster} ${C.dim}· ctx ${fmtK(rec.ctx)}/${fmtK(winTok)} (${pct}%)${C.reset}`;
+      return `${C.dim}ctx ${fmtK(rec.ctx)}/${fmtK(winTok)} (${pct}%)${rec.reseed ? ' ↺' : ''}${C.reset}`;
     }
-    return winTok ? `${roster} ${C.dim}· /${fmtK(winTok)}${C.reset}` : roster;
+    return winTok ? `${C.dim}ctx /${fmtK(winTok)}${C.reset}` : '';
   };
   const botBorder = () => {
     const stat = hudStat();
@@ -651,6 +657,7 @@ async function startBox() {
   const drawBox = () => {
     sync();
     setRegion(); // region matched to box height (+ spinner row when thinking)
+    drawNav(); // repaint the pinned top bar every frame — absolute-addressed, can't smear
     const top = boxTopRow();
     lastBoxTop = top; lastBoxH = boxH; // remember this footprint so a resize can wipe it
     w(`\x1b[${top};1H\x1b[2K${bar()}`);
@@ -734,6 +741,7 @@ async function startBox() {
   const teardown = () => {
     if (TTY) w('\x1b[?2004l'); // disable bracketed paste
     w('\x1b[r'); // release the scroll region
+    w('\x1b[1;1H\x1b[2K'); // clear the pinned top navbar
     const top = boxTopRow();
     for (let k = -1; k < boxH; k += 1) w(`\x1b[${top + k};1H\x1b[2K`); // clear spinner row + box rows
     w(`\x1b[${top};1H\x1b[?25h`);
@@ -766,7 +774,7 @@ async function startBox() {
     const expanded = expandPastes(line || '').trim(); // full text (pastes restored) for the Keeper
     pastes.clear(); pasteCount = 0; // the line left the box — its pastes are consumed
     const p = (line || '').trim();
-    if (p) out(`  ${C.deep}⟡${C.reset} ${C.sand}${p}${C.reset}`); // echo the compact placeholder form
+    if (p) out(`  ${C.deep}⟡${C.reset} ${C.sand}${p.replace(/\n/g, '\n    ')}${C.reset}`); // echo (continuation lines indent under the marker)
     if (!expanded) return;
     queue.push(expanded);
     drain();
@@ -820,6 +828,8 @@ async function startBox() {
     if (pasting) { if (typeof str === 'string') pasteBuf += str; return; } // accumulate, redraw once at paste-end
     if (key.ctrl && key.name === 'c') return finish();
     if (key.ctrl && key.name === 'd') return buf.length ? null : finish();
+    // Shift/Alt+Enter (terminal sends ESC+CR → meta+return) inserts a hard line break.
+    if (key.meta && (key.name === 'return' || key.name === 'enter')) { buf = buf.slice(0, curIdx) + '\n' + buf.slice(curIdx); curIdx += 1; return drawBox(); }
     if (key.name === 'return' || key.name === 'enter') return submit(buf);
     if (key.name === 'backspace') { if (curIdx > 0) { buf = buf.slice(0, curIdx - 1) + buf.slice(curIdx); curIdx -= 1; } return drawBox(); }
     if (key.ctrl && key.name === 'u') { buf = buf.slice(curIdx); curIdx = 0; return drawBox(); }

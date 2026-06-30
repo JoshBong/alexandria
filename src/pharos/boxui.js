@@ -61,18 +61,48 @@ export function wrapInput(buf, curIdx, prefixWidth, contIndent, cols) {
   curIdx = Math.max(0, Math.min(curIdx, buf.length));
   const firstCap = Math.max(1, cols - prefixWidth);
   const contCap = Math.max(1, cols - contIndent);
-  const rows = [buf.slice(0, firstCap)];
-  for (let i = firstCap; i < buf.length; i += contCap) rows.push(buf.slice(i, i + contCap));
-  let cursorRow;
-  let cursorCol;
-  if (curIdx < firstCap) {
-    cursorRow = 0;
-    cursorCol = prefixWidth + curIdx;
-  } else {
-    const rem = curIdx - firstCap;
-    cursorRow = 1 + Math.floor(rem / contCap);
-    cursorCol = contIndent + (rem % contCap);
+  const rows = [];
+  let cursorRow = -1;
+  let cursorCol = -1;
+  const logical = buf.split('\n'); // hard line breaks (Shift+Enter) split into logical lines
+  let consumed = 0; // buf chars before the current logical line (each \n counts as one)
+  for (let li = 0; li < logical.length; li += 1) {
+    const line = logical[li];
+    const lineStart = rows.length; // global visual-row index where this logical line begins
+    // Char-wrap this logical line; only the very first row of the whole buffer offsets by
+    // the prompt — every other row (continuations + later logical lines) sits at the gutter.
+    const lineRows = [];
+    if (line.length === 0) lineRows.push('');
+    else for (let pos = 0; pos < line.length; pos += (li === 0 && pos === 0 ? firstCap : contCap)) {
+      lineRows.push(line.slice(pos, pos + (li === 0 && pos === 0 ? firstCap : contCap)));
+    }
+    // Place the cursor if it falls within this logical line (inclusive of its trailing edge).
+    if (cursorRow === -1 && curIdx >= consumed && curIdx <= consumed + line.length) {
+      let acc = 0;
+      for (let vi = 0; vi < lineRows.length; vi += 1) {
+        const rlen = lineRows[vi].length;
+        const cap = li === 0 && vi === 0 ? firstCap : contCap;
+        const indent = li === 0 && vi === 0 ? prefixWidth : contIndent;
+        const off = curIdx - consumed;
+        if (off <= acc + rlen) {
+          const colOff = off - acc;
+          // At a FULL row's trailing edge the caret wraps: to the next visual row if one
+          // exists, else (end of buffer only) to a fresh row. Before a \n it stays put.
+          if (colOff === rlen && rlen === cap && (vi < lineRows.length - 1 || li === logical.length - 1)) {
+            if (vi < lineRows.length - 1) { acc += rlen; continue; }
+            cursorRow = lineStart + vi + 1; cursorCol = contIndent;
+          } else {
+            cursorRow = lineStart + vi; cursorCol = indent + colOff;
+          }
+          break;
+        }
+        acc += rlen;
+      }
+    }
+    for (const r of lineRows) rows.push(r);
+    consumed += line.length + 1; // skip the \n separator
   }
+  if (cursorRow === -1) { cursorRow = 0; cursorCol = prefixWidth; } // empty buffer
   while (rows.length <= cursorRow) rows.push(''); // a row to hold the cursor at a wrap boundary
   return { rows, cursorRow, cursorCol };
 }
