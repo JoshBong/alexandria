@@ -58,7 +58,7 @@ export function makeLiveHandle(opts = {}) {
       degraded: !!r.degraded,
       redone: !!r.redone,
       error: !!r.error,
-      touched: r.touched || [], // handle() doesn't surface touched yet → plateau stays quiet
+      touched: r.touched || [], // files this turn edited (from the stream-json tool_use log) → arms plateau (g1) + scope/risk drift (g2)
     };
   };
 }
@@ -86,6 +86,7 @@ function defaultRunCheck(cmd, opts = {}) {
 export function makeDomainVerify(opts = {}) {
   const runCheck = opts.runCheck || defaultRunCheck;
   const verifiers = opts.verifiers || {};
+  const assess = opts.assess; // (checks, result) → satisfied[] of met check ids; injected live
   return async (step, result, vctx = {}) => {
     const cmd = step.check || step.test;
     if (cmd) {
@@ -94,11 +95,17 @@ export function makeDomainVerify(opts = {}) {
     }
     const keeper = result.keeper || step.keeper;
     if (keeper && verifiers[keeper]) return verifiers[keeper](step, result, vctx);
-    // Enforce the frozen contract ONLY when the producer reports a satisfaction signal —
-    // handle() doesn't surface result.satisfied, so a contract you can't measure would
-    // auto-park every step (the first live run hit exactly this). No signal → structural.
-    if (step.contract && (step.contract.checks || []).length && Array.isArray(result.satisfied)) {
-      return verifyAgainstContract(step.contract, result);
+    // g3 — enforce the frozen contract when its checks can be MEASURED. The producer may
+    // already report `satisfied`; if not, an injected `assess` grades the output against
+    // the checks to produce one. Only when neither yields a signal do we fall through to
+    // structural (a contract you genuinely can't measure must not auto-park the step — the
+    // first live run hit exactly that). Fail-soft: an assess error → structural, never a block.
+    if (step.contract && (step.contract.checks || []).length) {
+      let satisfied = Array.isArray(result.satisfied) ? result.satisfied : null;
+      if (!satisfied && assess) {
+        try { satisfied = await assess(step.contract.checks, result); } catch { satisfied = null; }
+      }
+      if (Array.isArray(satisfied)) return verifyAgainstContract(step.contract, { ...result, satisfied });
     }
     return result.error ? { pass: false, feedback: 'turn errored' } : { pass: true };
   };
@@ -141,6 +148,24 @@ export function makeLiveSelfwrite(opts = {}) {
   };
 }
 
+// g3 live — grade a result against the frozen contract's checks to produce the
+// `satisfied` signal makeDomainVerify needs. Sessionless ask (independent of the producer
+// thread). Fail-soft: an unparseable reply → null (verify falls through to structural).
+export function makeLiveAssess(opts = {}) {
+  const ask = opts.ask || makeLiveAsk(opts);
+  return async (checks, result) => {
+    const prompt =
+      `Grade whether an output meets each acceptance check. For each check, decide if the ` +
+      `output CLEARLY satisfies it — be strict.\n\n` +
+      `Checks: ${JSON.stringify(checks)}\n` +
+      `Output: ${JSON.stringify((result && result.text) || '')}\n\n` +
+      `Return ONLY JSON: {"satisfied":["<id of each met check>"]}.`;
+    const out = await ask(prompt);
+    const v = extractJson(out);
+    return v && Array.isArray(v.satisfied) ? v.satisfied : null;
+  };
+}
+
 // Assemble the full opts bundle for runLoop — live planner/elaborator (via ask), live
 // step runner (warm reg), domain verify, live reviewer + self-writer, a real skills
 // store, and the active-Keeper roster. opts.overrides win (tests/sims swap any seam).
@@ -153,7 +178,7 @@ export function makeLiveLoopOpts(opts = {}) {
     dir: opts.dir,
     ask,
     handle: makeLiveHandle({ ...opts, reg, ask }),
-    verify: makeDomainVerify(opts),
+    verify: makeDomainVerify({ ...opts, assess: opts.assess || makeLiveAssess({ ...opts, ask }) }),
     review: makeLiveReview({ ...opts, ask }),
     selfwrite: makeLiveSelfwrite({ ...opts, ask }),
     skills,

@@ -61,6 +61,40 @@ export function boatExtraArgs(keeper, cfg) {
   return extra;
 }
 
+// Tools whose calls mean the turn ACTED ON a file (vs merely reading it). `touched` is
+// the set of files a turn changed — the granularity plateau (repeated same-file thrash)
+// and scope-creep (a file no planned step declared) both compare. Reads are excluded on
+// purpose: reading a file is not unplanned work and is not thrash.
+const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+
+// Parse `claude --output-format stream-json` NDJSON: harvest the final text + usage from
+// the `result` event and the edited file paths from every assistant `tool_use` block.
+// Fail-soft: unparseable lines are skipped; an empty/garbled stream falls back to the raw
+// stdout as text (so a transport hiccup degrades to "answer, no touched", never a crash).
+export function parseStreamJson(stdout) {
+  const raw = String(stdout || '');
+  let text = '';
+  let usage;
+  const touched = new Set();
+  for (const line of raw.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    let ev;
+    try { ev = JSON.parse(t); } catch { continue; }
+    if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
+      for (const b of ev.message.content) {
+        if (b && b.type === 'tool_use' && EDIT_TOOLS.has(b.name) && b.input && b.input.file_path) {
+          touched.add(b.input.file_path);
+        }
+      }
+    } else if (ev.type === 'result') {
+      if (typeof ev.result === 'string') text = ev.result;
+      if (ev.usage) usage = ev.usage;
+    }
+  }
+  return { text: text || raw.trim(), usage, touched: [...touched] };
+}
+
 // ASYNC by design: the live turn spawns `claude` non-blocking (was spawnSync, which
 // froze the whole event loop for the turn's duration — so any setInterval, like the
 // thinking spinner, never painted). With async spawn the loop stays free to animate
@@ -96,14 +130,19 @@ export async function runTurn(keeperId, prompt, { mock = false, reg, settings } 
 
   let args;
   let sessionId;
+  // stream-json (+ required --verbose) instead of plain json: the streamed event log
+  // carries the per-turn TOOL CALLS, not just the final text — that's how we surface
+  // `touched` (the files this turn edited) so the loop's plateau (g1) and scope/risk
+  // drift (g2) detectors have real signal live. The final `result` event still carries
+  // the text + usage, so contextTokens/canary behave exactly as before.
   if (fresh) {
     sessionId = randomUUID();
     // Persona + canary instruction set once at session creation; persists across
     // --resume turns (the system prompt isn't re-sent on resume).
-    args = ['-p', '--session-id', sessionId, '--append-system-prompt', keeper.persona + CANARY_INSTRUCTION, ...extra, '--output-format', 'json', prompt];
+    args = ['-p', '--session-id', sessionId, '--append-system-prompt', keeper.persona + CANARY_INSTRUCTION, ...extra, '--output-format', 'stream-json', '--verbose', prompt];
   } else {
     sessionId = existing.sessionId;
-    args = ['-p', '--resume', sessionId, ...extra, '--output-format', 'json', prompt];
+    args = ['-p', '--resume', sessionId, ...extra, '--output-format', 'stream-json', '--verbose', prompt];
   }
 
   const res = await new Promise((resolve) => {
@@ -127,18 +166,11 @@ export async function runTurn(keeperId, prompt, { mock = false, reg, settings } 
     return { text: `    [${keeperId}] ⚠ claude exited ${res.status}: ${(res.stderr || '').trim().slice(0, 300)}`, sessionId, fresh, error: true };
   }
 
-  let text = (res.stdout || '').trim();
-  let usage;
-  try {
-    const parsed = JSON.parse(text);
-    text = parsed.result ?? text;
-    usage = parsed.usage; // per-turn token accounting → the EARLY compaction signal
-  } catch {
-    /* non-JSON output — relay raw */
-  }
+  const { text, usage, touched } = parseStreamJson(res.stdout);
 
   reg.sessions[keeperId] = { sessionId, started: true };
   // contextTokens = the load carried into this turn (input + cache reads/creation).
   // Pharos uses it as the EARLY (token-low) flush trigger; see pharos/tokens.js.
-  return { text, sessionId, fresh, usage, contextTokens: contextTokensOf(usage) };
+  // touched = the files this turn edited → the loop's plateau/drift detectors.
+  return { text, sessionId, fresh, usage, contextTokens: contextTokensOf(usage), touched };
 }

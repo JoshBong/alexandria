@@ -197,6 +197,7 @@ export async function handle(prompt, opts = {}) {
     // total, so "hi" reads as ~17 tokens, not the 20k+ of resident context.
     usage: turn.usage || null,
     turnTokens: (turn.usage?.input_tokens || 0) + (turn.usage?.output_tokens || 0),
+    touched: turn.touched || [], // files this turn edited → loop plateau (g1) + scope/risk drift (g2)
     text: finalText,
   };
 }

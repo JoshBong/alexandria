@@ -69,6 +69,24 @@ test('makeDomainVerify: contract enforced only when the result reports satisfied
   assert.equal((await verify({ contract }, { satisfied: [] })).pass, false);
 });
 
+test('makeDomainVerify: an injected assess grades the contract live (g3 armed)', async () => {
+  const contract = { checks: [{ id: 'a' }, { id: 'b' }] };
+  // assess stands in for the live grader: it returns the met check ids from the output.
+  const verify = makeDomainVerify({ assess: async (checks, result) => (result.text.includes('done') ? ['a', 'b'] : ['a']) });
+  assert.equal((await verify({ contract }, { text: 'all done' })).pass, true);  // both met → lock
+  const miss = await verify({ contract }, { text: 'partial' });
+  assert.equal(miss.pass, false);                          // b unmet → parked
+  assert.match(miss.feedback, /b/);
+  // a producer-reported satisfied still wins without calling assess
+  let assessed = false;
+  const verify2 = makeDomainVerify({ assess: async () => { assessed = true; return []; } });
+  assert.equal((await verify2({ contract }, { satisfied: ['a', 'b'] })).pass, true);
+  assert.equal(assessed, false);
+  // assess throwing → fail-soft to structural, never an auto-park
+  const verify3 = makeDomainVerify({ assess: async () => { throw new Error('boom'); } });
+  assert.equal((await verify3({ contract }, { text: 'x' })).pass, true);
+});
+
 // ---- makeLiveReview / makeLiveSelfwrite ----
 
 test('makeLiveReview: parses a verdict, fail-soft to approved on junk', async () => {
