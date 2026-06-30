@@ -14,6 +14,7 @@
 // flow — ordering, locked prefix, buffer→replan — is provable offline.
 
 import { unlockedTail } from './plan-store.js';
+import { compileContract } from './contract.js';
 
 // Stable id generator for new steps: max existing numeric suffix + 1, so ids never
 // collide across replans and the prefix keeps its ids.
@@ -26,16 +27,23 @@ function nextStepId(plan) {
 }
 
 function makeStep(plan, intent, extra = {}) {
-  return {
+  const seed = typeof intent === 'string' ? { intent } : intent;
+  const step = {
     id: nextStepId(plan),
-    intent: typeof intent === 'string' ? intent : intent.intent,
-    deps: extra.deps || [],
-    touches: extra.touches || [],
+    intent: seed.intent,
+    deps: extra.deps || seed.deps || [],
+    touches: extra.touches || seed.touches || [],
     status: 'pending',
     locked: false,
     attempts: 0,
+    ...(seed.checks ? { checks: seed.checks } : {}),
+    ...(seed.done ? { done: seed.done } : {}),
     ...(extra.origin ? { origin: extra.origin } : {}),
   };
+  // Freeze the done-condition at plan time (g3): a step carries its contract so
+  // completion is checked against it, not re-read from free text at run time.
+  step.contract = compileContract(step, { riskPaths: extra.riskPaths });
+  return step;
 }
 
 // FIRST call. Empty plan + goal → an ordered step list + the done predicate. Live,

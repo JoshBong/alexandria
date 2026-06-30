@@ -13,6 +13,7 @@
 // does NOT mutate the plan (the driver marks/locks at the boundary).
 
 import { isPlateau, attemptTargets } from './plateau.js';
+import { contractVerify } from './contract.js';
 
 export const DEFAULT_ATTEMPT_BUDGET = 3;
 
@@ -25,8 +26,11 @@ export const DEFAULT_ATTEMPT_BUDGET = 3;
 //   reason on a park: 'plateau' (thrashing the same targets) | 'budget' (attempts spent).
 export async function runStep(step, opts = {}) {
   const handle = opts.handle || (async (p) => ({ text: `(mock) ${p}` }));
-  const verify = opts.verify || (async () => ({ pass: true }));
-  const budget = opts.budget ?? DEFAULT_ATTEMPT_BUDGET;
+  // verify precedence: an injected verifier wins (tests/domains); else the step's frozen
+  // contract (g3) makes completion deterministic; else the structural pass default.
+  const verify = opts.verify || (step.contract ? contractVerify(step.contract) : async () => ({ pass: true }));
+  // The contract's frozen ceiling is authoritative for the budget unless overridden.
+  const budget = opts.budget ?? step.contract?.max_iterations ?? DEFAULT_ATTEMPT_BUDGET;
 
   let attempts = 0;
   let result = null;
