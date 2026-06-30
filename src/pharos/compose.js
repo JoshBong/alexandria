@@ -12,22 +12,27 @@
 // pharos.js — the rest of the head doesn't change. Kept terse so the standing
 // persona prefix still caches well.
 
-// Build the final turn text from the user's prompt + recalled memory + turn flags.
-// recalled: Record[] (may be []). Returns a string; with no recall it's the prompt
-// unchanged (so the mock path and warm-hit path are untouched).
-export function composeTurn({ prompt, recalled = [] } = {}) {
-  if (!recalled || !recalled.length) return prompt;
-
+// The Keeper-facing memory block: recalled records as labelled bullets, ended with a
+// blank line so it prepends cleanly to a request. Returns '' when there's no recall.
+// Shared so BOTH the local composer (composeTurn) AND the reframe composer attach the
+// SAME context — recall must reach the Keeper regardless of whether reframe is on.
+export function memoryContext(recalled = []) {
+  if (!recalled || !recalled.length) return '';
   const bullets = recalled.map((r) => {
     const head = (r.text || '').split('\n')[0].slice(0, 200);
     const where = r.id ? ` (${r.id})` : '';
     return `- ${head}${where}`;
   });
-
   return [
     'Context that may be relevant, pulled from memory — verify before relying on it:',
     ...bullets,
-    '',
-    `Request: ${prompt}`,
-  ].join('\n');
+  ].join('\n') + '\n\n';
+}
+
+// Build the final turn text from the user's prompt + recalled memory + turn flags.
+// recalled: Record[] (may be []). Returns a string; with no recall it's the prompt
+// unchanged (so the mock path and warm-hit path are untouched).
+export function composeTurn({ prompt, recalled = [] } = {}) {
+  const ctx = memoryContext(recalled);
+  return ctx ? `${ctx}Request: ${prompt}` : prompt;
 }

@@ -61,8 +61,22 @@ test('reframe: augments a task with the runner, weaving recall (original preserv
   const out = await compose({ prompt: 'wrap up the linear algebra pset', recalled: [{ text: 'the linear algebra pset' }], alias: 'classwork' });
   assert.match(out, /wrap up the linear algebra pset/); // the user's words always go through
   assert.match(out, /Clarified task: CLEAN QUESTION/);  // reframe attached, NOT substituted
+  assert.match(out, /pulled from memory/); // recall ALSO reaches the Keeper (not just the reframe model)
   assert.match(seenUser, /linear algebra pset/); // recall reached the runner
   assert.match(seenUser, /wrap up the linear algebra pset/);
+});
+
+test('reframe: recall reaches the Keeper even when the runner SKIPs (regression: reframe-on dropped recall)', async () => {
+  const compose = makeReframeComposer({ run: async () => 'SKIP' });
+  const out = await compose({
+    prompt: 'how is the deployment looking today',
+    recalled: [{ text: 'prod deploy is on Vercel, project alexandria', id: 'm1' }],
+    alias: 'code',
+  });
+  assert.match(out, /how is the deployment looking today/); // original preserved
+  assert.match(out, /pulled from memory/);                  // memory block attached
+  assert.match(out, /prod deploy is on Vercel/);            // the recalled fact reaches the Keeper
+  assert.doesNotMatch(out, /Clarified task/);               // SKIP → no reframe appended
 });
 
 test('reframe: short/casual message skips the runner entirely (no call spawned)', async () => {

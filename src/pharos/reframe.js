@@ -13,6 +13,7 @@
 // headless `claude -p` call (boat-flagged so the ark hooks self-suppress).
 
 import { spawnSync } from 'node:child_process';
+import { memoryContext } from './compose.js';
 
 function askClaude(system, user) {
   const env = { ...process.env };
@@ -45,8 +46,14 @@ const TASK_FLOOR = 4; // words; below this, pass the message straight through
 // original words; a reframe is attached as guidance, never substituted for them.
 export function makeReframeComposer({ run = askClaude } = {}) {
   return async ({ prompt, recalled = [], alias = '' } = {}) => {
+    // The Keeper-facing memory block — the SAME context composeTurn attaches. Recall must
+    // reach the Keeper whether or not reframe runs; previously reframe fed memory only to the
+    // reframe model and dropped it from the turn, so turning reframe on silently lost recall.
+    const keeperCtx = memoryContext(recalled);
+    const withCtx = (body) => (keeperCtx ? `${keeperCtx}${body}` : body);
+
     const words = String(prompt || '').trim().split(/\s+/).filter(Boolean);
-    if (words.length < TASK_FLOOR) return prompt; // not a task → untouched, no call
+    if (words.length < TASK_FLOOR) return withCtx(prompt); // not a task → no reframe call, but recall still reaches the Keeper
 
     const ctx = recalled.length
       ? 'Relevant memory (may help resolve shorthand — do not treat as fact):\n' +
@@ -61,9 +68,10 @@ export function makeReframeComposer({ run = askClaude } = {}) {
       `reply with exactly: SKIP. Output only the restated task, or SKIP.`;
     const out = (await run(system, `${ctx}User message: ${prompt}`) || '').trim();
     // Fail-soft + gate: empty, an explicit SKIP, or an echo of the prompt → send the user's
-    // words untouched. Otherwise AUGMENT: original message first, reframe attached as guidance.
-    if (!out || out === 'SKIP' || out === prompt.trim()) return prompt;
-    return `${prompt}\n\n[Clarified task: ${out}]`;
+    // words untouched (still with recall). Otherwise AUGMENT: original message first, reframe
+    // attached as guidance — both on top of the recalled memory block.
+    if (!out || out === 'SKIP' || out === prompt.trim()) return withCtx(prompt);
+    return withCtx(`${prompt}\n\n[Clarified task: ${out}]`);
   };
 }
 
