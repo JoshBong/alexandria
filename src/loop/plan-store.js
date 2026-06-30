@@ -57,12 +57,14 @@ export function lockStep(plan, stepId) {
   return plan;
 }
 
-// Explicitly reopen a locked step for rework — the ONLY way a done step re-enters
-// the tail. Surfaced by the caller, never applied silently (docs §6). Returns true
-// if a locked step was actually unlocked.
+// Explicitly reopen a step for rework — the ONLY way a terminal step re-enters the
+// tail. Two cases: a DONE step (locked) being redone, or a PARKED step (budget spent,
+// status 'parked', never locked) being retried after the blocker clears. Both reset to
+// pending. Surfaced by the caller, never applied silently (docs §6). Returns true if a
+// step was actually reopened.
 export function unlockStep(plan, stepId) {
   const s = plan.steps.find((x) => x.id === stepId);
-  if (s && s.locked) {
+  if (s && (s.locked || s.status === 'parked')) {
     s.locked = false;
     s.status = 'pending';
     return true;

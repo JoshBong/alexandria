@@ -13,7 +13,7 @@
 // Live planning (opts.ask) is P1. P0 ships deterministic planners so the control
 // flow — ordering, locked prefix, buffer→replan — is provable offline.
 
-import { lockedPrefix, unlockedTail } from './plan-store.js';
+import { unlockedTail } from './plan-store.js';
 
 // Stable id generator for new steps: max existing numeric suffix + 1, so ids never
 // collide across replans and the prefix keeps its ids.
@@ -58,17 +58,18 @@ export async function plan(planObj, opts = {}) {
 // a P1 planning decision); the invariant proven here is prefix-immutability + weave-in.
 export async function replan(planObj, elaboratedInputs = [], opts = {}) {
   if (opts.ask) return liveReplan(planObj, elaboratedInputs, opts);
-  const prefix = lockedPrefix(planObj);
-  const tail = unlockedTail(planObj);
   const added = [];
   for (const input of elaboratedInputs) {
     for (const s of input.steps || []) {
       added.push(makeStep({ ...planObj, steps: [...planObj.steps, ...added] }, s, { origin: input.id }));
     }
   }
-  // Prefix stays first and in place; tail keeps its order; new steps land at the end
-  // of the tail. (Revise, don't regenerate — no existing id moves.)
-  planObj.steps = [...prefix, ...tail, ...added];
+  // Append new steps to the end; every existing step keeps its slot in the ORIGINAL
+  // order. (Revise, don't regenerate — no existing id moves. The old prefix/tail
+  // re-partition reordered a locked step ahead of an earlier unlocked one when steps
+  // completed out of order, which broke that invariant and would mislead a P1 planner
+  // that trusts tail order.)
+  planObj.steps = [...planObj.steps, ...added];
   return planObj;
 }
 

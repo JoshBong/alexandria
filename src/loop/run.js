@@ -26,6 +26,7 @@ import {
   nextReady,
   doneConditionHolds,
   allRemainingBlocked,
+  noPendingSteps,
   guardsTrip,
   isStop,
 } from './guards.js';
@@ -92,9 +93,16 @@ export async function runLoop(goal, opts = {}) {
     if (!step) {
       if (doneConditionHolds(plan, opts)) return exit('success', 'done-condition holds', plan, state, ctx);
       if (allRemainingBlocked(plan)) return exit('stuck', 'all remaining steps blocked', plan, state, ctx);
-      // No ready step, not done, not blocked: only inbox input can unblock. Fall
-      // through to the boundary so a buffered input can replan; if the boundary adds
-      // nothing, the watchdog/blocked guard will halt.
+      // Nothing pending and not done → the remaining steps are PARKED. Surface that now
+      // with a clear count, rather than spinning empty boundaries until the watchdog trips
+      // (which would mislabel a finished-with-parks run as a generic no-progress stall).
+      if (noPendingSteps(plan)) {
+        const parked = plan.steps.filter((s) => s.status === 'parked').length;
+        return exit('stuck', `${parked} step${parked === 1 ? '' : 's'} parked`, plan, state, ctx);
+      }
+      // No ready step, not done, not blocked, but something is still pending (its dep is
+      // in-flight elsewhere is impossible here, so this is the only-inbox-can-unblock case):
+      // fall through to the boundary so a buffered input can replan; the watchdog backstops.
     }
 
     let signals = {};

@@ -42,6 +42,12 @@ export function allRemainingBlocked(plan) {
   return pending.length > 0 && nextReady(plan) === null;
 }
 
+// No step is pending — every step has reached a terminal outcome (done or parked).
+// When this holds but the done-condition doesn't, the only non-done steps are PARKED:
+// the driver should surface that immediately instead of spinning empty boundaries until
+// the watchdog trips (which mislabels a finished-with-parks run as a generic stall).
+export const noPendingSteps = (plan) => plan.steps.length > 0 && !plan.steps.some((s) => s.status === 'pending');
+
 const parkedCount = (plan) => plan.steps.filter((s) => s.status === 'parked').length;
 
 // Do the plan-level guards trip? `state.boundariesSinceProgress` is the watchdog

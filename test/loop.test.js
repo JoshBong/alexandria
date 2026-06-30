@@ -179,6 +179,44 @@ test('a parked step does not block success when nothing depends on it', async ()
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('parked exit is immediate + reasoned, not a watchdog spin', async () => {
+  const dir = tmp('run-park-fast');
+  // 'flaky' parks; ok1/ok2 pass. The loop must exit the instant nothing is pending —
+  // with a "N parked" reason — instead of spinning empty boundaries to the watchdog.
+  const res = await runLoop('mixed', {
+    dir,
+    steps: ['ok1', 'flaky', 'ok2'],
+    handle: passingHandle,
+    verify: verifyExcept(['flaky']),
+    budget: 2,
+  });
+  assert.equal(res.status, 'stuck');
+  assert.match(res.reason, /1 step parked/); // clear cause, not "watchdog: no progress"
+  assert.ok(res.iterations <= 4, `exited promptly (was ${res.iterations})`); // not watchdog-many
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('unlockStep reopens a PARKED step (retry after the blocker clears)', () => {
+  const p = freshPlan('t', 'g');
+  p.steps = [{ id: 's1', intent: 'a', status: 'parked', locked: false }];
+  assert.equal(unlockStep(p, 's1'), true);
+  assert.equal(p.steps[0].status, 'pending');
+  assert.equal(p.steps[0].locked, false);
+});
+
+test('replan preserves original step order when completion is out-of-order', async () => {
+  // s1 unlocked (parked), s2 locked (done out of order). Replan must NOT hoist the
+  // locked s2 ahead of the earlier s1 — every existing id keeps its slot.
+  const p = freshPlan('t', 'g');
+  p.steps = [
+    { id: 's1', intent: 'a', status: 'parked', locked: false },
+    { id: 's2', intent: 'b', status: 'done', locked: true },
+  ];
+  await replanFn(p, [{ id: 'i1', steps: ['c'] }]);
+  assert.deepEqual(p.steps.map((s) => s.id), ['s1', 's2', 's3']); // order intact, new step appended
+  assert.equal(p.steps[2].origin, 'i1');
+});
+
 test('resume: a saved plan is reloaded, not regenerated', async () => {
   const dir = tmp('run-resume');
   // First run completes; second run with the same dir reloads the done plan and exits

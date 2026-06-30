@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { getSettings, saveSettings } from '../src/pharos/settings.js';
 import { hasProfile, saveProfile, getProfile } from '../src/pharos/profile.js';
 import { layout, visLen, wrapInput } from '../src/pharos/boxui.js';
+import { collapseCode } from '../src/pharos/render.js';
 import { initMenu, menuKey, MODEL_CHOICES, SHARED_TOOL_CHOICES, SETTINGS_SCHEMA } from '../src/pharos/menu.js';
 
 const mock = process.argv.includes('--mock');
@@ -531,7 +532,13 @@ async function handleLine(line) {
   console.log(`  ${arrow} ${C.b}${r.routed}${C.reset} ${C.dim}(${r.alias})${C.reset} ${C.gray}${r.note}${r.fresh ? ' · new' : ''}${C.reset}${recall}${flush}${early}${meter}`);
   if (showMetrics) printMetrics(r);
   console.log('');
-  console.log(r.text.split('\n').map((l) => `  ${l}`).join('\n')); // answer under a soft left gutter
+  // Collapse long fenced code blocks before printing — a Keeper answer with an 80-line
+  // block used to bury the actual reply (Claude-Code/ghostty practice: show a compact
+  // foldable summary, not every byte). TTY only; piped/test output stays full & verbatim.
+  const body = TTY
+    ? collapseCode(r.text, { style: { summary: (s) => `${C.dim}${C.bronze}${s}${C.reset}` } })
+    : r.text;
+  console.log(body.split('\n').map((l) => `  ${l}`).join('\n')); // answer under a soft left gutter
   console.log('');
   // Update the persistent bottom-border HUD: current Keeper + TOTAL context against the
   // real context WINDOW (not the flush trigger — that was the confusing 150k "max").
@@ -556,10 +563,26 @@ async function startBox() {
   const out0 = process.stdout;
   const GUTTER = 2; // continuation lines wrap flush-left at the 2-col gutter (under the marker)
   let boxH = 3; // dynamic: 1 top rule + N wrapped input rows + 1 bottom border
+  let lastBoxTop = null; // the box's last drawn top row + height — so a resize can wipe the
+  let lastBoxH = boxH; //   old footprint instead of stranding a stale border mid-screen
   let L = layout(out0.rows, boxH);
   const cols = () => out0.columns || 80;
   const w = (s) => out0.write(s);
   const bar = () => `  ${C.bronze}${rule()}${C.reset}`;
+
+  // ---- the sticky top navbar (Josh's request) ----
+  // The roster pins to the TOP rows the SAME way the input box pins to the bottom: the
+  // DECSTBM scroll region is started BELOW these rows (regionTop), so the transcript
+  // scrolls UNDER the bar while it stays lit on top. NAV_H rows: the banner + a divider.
+  const NAV_H = 2; // banner row + rule row
+  const regionTop = () => NAV_H + 1; // the scroll region's first row (1..NAV_H are frozen)
+  const navRoster = KEEPERS.filter((k) => k.active)
+    .map((k) => `${C.deep}⟡${C.reset} ${C.b}${k.id[0].toUpperCase() + k.id.slice(1)}${C.reset}`)
+    .join('  ');
+  const drawNav = () => {
+    w(`\x1b[1;1H\x1b[2K  ${C.b}${C.gold}✦ Alexandria${C.reset}   ${navRoster}`);
+    w(`\x1b[2;1H\x1b[2K  ${C.bronze}${rule()}${C.reset}`);
+  };
 
   let buf = '';
   let curIdx = 0;
@@ -588,16 +611,21 @@ async function startBox() {
   // when a Keeper is thinking one extra row above the box is reserved for the spinner and
   // EXCLUDED from the scroll region — so streamed output (echoes, answers) can never land
   // on the spinner's row. This is what stops queued prompts from being overwritten.
-  const boxTopRow = () => out0.rows - boxH + 1;
+  // Clamp the box's top row so a box taller than the terminal (e.g. the /settings menu in
+  // a very short window) still draws from an on-screen row just under the navbar instead
+  // of at a non-positive absolute row (which corrupts the draw).
+  const boxTopRow = () => Math.max(regionTop() + 1, out0.rows - boxH + 1);
   const contentBottom = () => Math.max(1, boxTopRow() - 1 - (spinning ? 1 : 0)); // last scrolling row
   const spinnerRow = () => boxTopRow() - 1;
-  const setRegion = () => w(`\x1b[1;${contentBottom()}r`);
+  const setRegion = () => w(`\x1b[${regionTop()};${contentBottom()}r`);
   const placeCursor = () => { const m = measure(); w(`\x1b[${boxTopRow() + 1 + m.cursorRow};${m.cursorCol + 1}H`); };
 
   const drawBox = () => {
     sync();
     setRegion(); // region matched to box height (+ spinner row when thinking)
+    drawNav(); // repaint the frozen top bar (cheap; keeps it lit through every redraw)
     const top = boxTopRow();
+    lastBoxTop = top; lastBoxH = boxH; // remember this footprint so a resize can wipe it
     w(`\x1b[${top};1H\x1b[2K${bar()}`);
     if (menu) {
       const ls = menuLines(menu, menuView);
@@ -622,7 +650,7 @@ async function startBox() {
   const out = (s = '') => {
     sync();
     const bottom = contentBottom();
-    w(`\x1b[1;${bottom}r`);
+    w(`\x1b[${regionTop()};${bottom}r`);
     for (const ln of String(s).split('\n')) {
       w(`\x1b[${bottom};1H\n`);
       w(`\x1b[${bottom};1H\x1b[2K${ln}`);
@@ -650,11 +678,24 @@ async function startBox() {
     return { stop() { clearInterval(timer); w(`\x1b[${spinnerRow()};1H\x1b[2K`); spinning = false; drawBox(); } };
   };
 
-  const onResize = () => { drawBox(); };
+  // On resize the box moves to a new bottom-anchored position; its OLD rows aren't part
+  // of the new scroll region and won't be scrolled away, so wipe that former footprint
+  // (spinner row + box band) before redrawing — otherwise a grow strands a stale border
+  // mid-screen and a shrink leaves orphaned transcript below the new box.
+  const onResize = () => {
+    if (lastBoxTop != null) {
+      for (let k = -1; k <= lastBoxH; k += 1) {
+        const r = lastBoxTop + k;
+        if (r >= 1 && r <= out0.rows) w(`\x1b[${r};1H\x1b[2K`);
+      }
+    }
+    drawBox();
+  };
   const teardown = () => {
     w('\x1b[r'); // release the scroll region
     const top = boxTopRow();
     for (let k = -1; k < boxH; k += 1) w(`\x1b[${top + k};1H\x1b[2K`); // clear spinner row + box rows
+    for (let k = 1; k <= NAV_H; k += 1) w(`\x1b[${k};1H\x1b[2K`); // clear the frozen top navbar rows
     w(`\x1b[${top};1H\x1b[?25h`);
     out0.removeListener('resize', onResize);
     if (stdin.setRawMode) stdin.setRawMode(false);
