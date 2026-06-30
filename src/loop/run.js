@@ -36,8 +36,12 @@ import {
 import { isTokenLow } from '../pharos/tokens.js';
 
 // One durable line per step/boundary, to the loop's own log.jsonl (reuses logEvent's
-// shape). Best-effort + gated on persist, like pharos/events.js.
+// shape). Best-effort + gated on persist, like pharos/events.js. A live observer
+// (opts.onEvent — the CLI's progress printer) sees every event regardless of persist.
 function logLoop(event, ctx) {
+  if (ctx.onEvent) {
+    try { ctx.onEvent(event); } catch { /* an observer must never break the loop */ }
+  }
   if (!ctx.persist) return;
   try {
     const file = ctx.paths.log;
@@ -70,7 +74,7 @@ export async function runLoop(goal, opts = {}) {
   const loopId = opts.loopId || 'default';
   const paths = loopPaths(loopId, opts);
   const persist = opts.persist ?? true;
-  const ctx = { loopId, paths, persist };
+  const ctx = { loopId, paths, persist, onEvent: opts.onEvent };
 
   const elaborate = opts.elaborate || makeElaborator({ ask: opts.ask });
   const doPlan = opts.plan || planFn;

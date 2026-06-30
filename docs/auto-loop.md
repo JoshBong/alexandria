@@ -185,17 +185,28 @@ step runner is domain-agnostic; it calls `keeper.verify`.
 
 ## 10. Phased rollout
 
-- **P0 — control flow, mock.** `run.js` + `plan-store.js` + `inbox.js` with injected
-  mock `plan`/`elaborate`/`verify`/`handle`. Prove: ordered run, remove-on-done,
+- **P0 — control flow, mock. ✅ BUILT.** `run.js` + `plan-store.js` + `inbox.js` with
+  injected mock `plan`/`elaborate`/`verify`/`handle`. Proven: ordered run, remove-on-done,
   buffer→replan at boundary, locked prefix, all guards, done/stuck exits. No `claude`.
-- **P1 — live planner + elaborator.** Wire `opts.ask` into `plan`/`elaborate`; the
-  seam-exposed elaboration output; confirm-on-fork.
-- **P2 — live step runner over Pharos.** `runStep` calls `handle()`; freshness reseed
-  uses the signals `handle()` already returns. One Keeper (Ptah) end to end.
-- **P3 — domain verify + multi-Keeper.** `verify` table; a loop step can route to the
-  right Keeper per step.
-- **P4 — async injection UX.** Non-blocking stdin in `bin/pharos.js` (today input is
-  paused during a turn) → writes to `inbox.jsonl` while a loop runs.
+- **P1 — live planner + elaborator. ✅ BUILT.** `plan.js`/`elaborate.js` parse the model's
+  JSON (via `loop/parse.js`) into steps + the seam (said/entailed/assuming/fork); fail-soft
+  to the deterministic decomposition on junk. Live deps dropped (rely on emit order).
+- **P2 — live step runner over Pharos. ✅ BUILT.** `loop/live.js` `makeLiveHandle` runs
+  `runStep`'s `do` against `handle()` on a THREADED warm reg (Keeper sessions persist
+  across steps); freshness reseed reads handle()'s signals.
+- **P3 — domain verify + multi-Keeper. ✅ BUILT.** `makeDomainVerify` dispatches: a step
+  check-command (Ptah runs tests) → a per-Keeper `verifiers[keeper]` → the frozen contract
+  → structural. `makeLiveReview` routes g4 to a different Keeper's model.
+- **P4 — async injection UX. ✅ file-transport BUILT.** `bin/loop.js` (`alexandria-loop`)
+  + `loop/session.js` run a goal live with a progress printer; `--say` appends to
+  `inbox.jsonl` so input lands mid-loop (drained at the next boundary). Non-blocking stdin
+  inside the pinned-box TUI itself remains the one open UX refinement.
+
+The live stack lives in `loop/live.js` (adapters), `loop/session.js` (`runLiveLoop` +
+event formatter + `injectInput`), `memory/skills.js` (the skill store g5 writes / g6
+prunes), and `bin/loop.js` (CLI). Every adapter takes its `claude`-spawning primitive as
+an injectable, so the whole live stack is proven offline (`test/live.test.js`,
+`test/session.test.js`) and `alexandria-loop --mock` runs the full pipeline with no boat.
 
 ## 12. Grafted mechanisms (hermes-agent + claude-code-harness)
 

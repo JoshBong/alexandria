@@ -8,7 +8,8 @@
   "bin": {
     "alexandria": "bin/pharos.js",
     "pharos": "bin/pharos.js",
-    "alexandria-events": "bin/events.js"
+    "alexandria-events": "bin/events.js",
+    "alexandria-loop": "bin/loop.js"
   },
   "engines": {
     "node": ">=18"
@@ -23,6 +24,7 @@
     "alexandria": "node bin/pharos.js",
     "pharos": "node bin/pharos.js",
     "events": "node bin/events.js",
+    "loop": "node bin/loop.js",
     "router-proof": "node test/router-proof.js",
     "route-log": "node test/route-log.js",
     "phase1-sim": "node test/phase1-sim.js"

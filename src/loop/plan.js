@@ -15,6 +15,7 @@
 
 import { unlockedTail } from './plan-store.js';
 import { compileContract } from './contract.js';
+import { extractJson } from './parse.js';
 
 // Stable id generator for new steps: max existing numeric suffix + 1, so ids never
 // collide across replans and the prefix keeps its ids.
@@ -81,22 +82,58 @@ export async function replan(planObj, elaboratedInputs = [], opts = {}) {
   return planObj;
 }
 
-// Live shapes (P1) — contract placeholders, not exercised in P0.
+// Live planner (P1). Ask the model for a JSON plan, parse it into steps, and fail soft
+// to a single goal-step if the model returns nothing usable (a live turn must never
+// leave the loop with an empty plan).
+const PLAN_SHAPE =
+  `Return ONLY JSON: {"done":"<single checkable done-condition>","steps":[{"intent":"<concrete step>",` +
+  `"touches":["<file or surface>"],"checks":["<verifiable check>"],"deps":["<prior step intent or index>"]}]}. ` +
+  `touches/checks/deps are optional. Order the steps; keep them concrete and minimal.`;
+
 async function liveplan(planObj, opts) {
-  const out = await opts.ask(
-    `Decompose this goal into an ordered list of concrete steps, and state a single ` +
-      `checkable done-condition. If the goal has no checkable predicate, propose ` +
-      `acceptance criteria.\n\nGoal: ${planObj.goal}`,
-  );
-  planObj.raw = out; // P1 parses this into steps + done
+  const out = await opts.ask(`Decompose this goal into an ordered plan.\n\nGoal: ${planObj.goal}\n\n${PLAN_SHAPE}`);
+  const parsed = extractJson(out);
+  const seeds = parsed && Array.isArray(parsed.steps) && parsed.steps.length ? parsed.steps : [planObj.goal];
+  planObj.steps = [];
+  for (const seed of seeds) planObj.steps.push(makeStep(planObj, normalizeSeed(seed), { riskPaths: opts.riskPaths }));
+  planObj.done = (parsed && parsed.done) || planObj.done || opts.done || `all steps for: ${planObj.goal}`;
+  planObj.cursor = 0;
   return planObj;
 }
+
+// Live replan (P1). Same revise discipline as the deterministic path — the model only
+// ever sees the UNLOCKED tail + the new intent, and whatever steps it returns are
+// appended (prefix-immutability is enforced structurally by the driver/plan-store, not
+// trusted to the model). Fail-soft: unparseable → fold the raw intents as steps.
 async function liveReplan(planObj, elaboratedInputs, opts) {
-  await opts.ask(
-    `Revise the unlocked tail of this plan to absorb new intent. Do NOT touch locked ` +
-      `steps or move the in-flight step. Revise, don't regenerate.\n\nPlan: ` +
-      `${JSON.stringify({ steps: unlockedTail(planObj) })}\n\nNew intent: ` +
-      `${JSON.stringify(elaboratedInputs)}`,
+  const out = await opts.ask(
+    `Revise the unlocked tail to absorb new intent. Do NOT restate locked/in-flight steps — ` +
+      `return ONLY the NEW steps to append.\n\nUnlocked tail: ${JSON.stringify(unlockedTail(planObj).map((s) => s.intent))}` +
+      `\n\nNew intent: ${JSON.stringify(elaboratedInputs.map((e) => e.said || e))}\n\n` +
+      `Return ONLY JSON: {"steps":[{"intent":"...","touches":[],"checks":[],"deps":[]}]}.`,
   );
+  const parsed = extractJson(out);
+  const newSteps = parsed && Array.isArray(parsed.steps) ? parsed.steps : null;
+  if (newSteps && newSteps.length) {
+    for (const s of newSteps) planObj.steps.push(makeStep(planObj, normalizeSeed(s), { riskPaths: opts.riskPaths }));
+  } else {
+    // Model gave nothing usable — don't drop the human's intent on the floor; fold each
+    // elaborated input's decomposed steps in deterministically.
+    for (const input of elaboratedInputs) {
+      for (const seed of input.steps || [{ intent: input.said || String(input) }]) {
+        planObj.steps.push(makeStep(planObj, normalizeSeed(seed), { origin: input.id, riskPaths: opts.riskPaths }));
+      }
+    }
+  }
   return planObj;
+}
+
+// A model-emitted step may be a string or an object; makeStep wants {intent,...}. We
+// keep touches/checks but DROP any model-supplied deps: P0 deps are step IDs, and a
+// model returns deps as intent-strings/indices that wouldn't resolve — an unresolvable
+// dep deadlocks the guards. Emit ORDER is the ordering in P1; id-based dep resolution at
+// the planner boundary is a later refinement.
+function normalizeSeed(seed) {
+  if (typeof seed === 'string') return { intent: seed };
+  return { intent: seed.intent || seed.step || '', touches: seed.touches, checks: seed.checks };
 }

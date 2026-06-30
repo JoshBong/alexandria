@@ -30,11 +30,13 @@ function normalizeVerdict(raw) {
 // Review one finished step before it locks. Returns { approved, reviewer, notes }. The
 // payload is READ-ONLY: the reviewer sees the step + result, never mutates them.
 export async function reviewStep(step = {}, result = {}, opts = {}) {
-  const reviewer = pickReviewer(step.keeper, opts.roster);
+  // The producer is known from the step, or (live) from which Keeper the turn routed to.
+  const producer = step.keeper || result.keeper || null;
+  const reviewer = pickReviewer(producer, opts.roster);
   if (!opts.review) return { approved: true, reviewer, notes: 'no reviewer wired (P0 no-op)' };
   const payload = {
     reviewer,
-    producer: step.keeper || null,
+    producer,
     intent: step.intent,
     definition_of_done: step.contract && step.contract.definition_of_done,
     checks: (step.contract && step.contract.checks) || [],

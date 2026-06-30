@@ -18,6 +18,8 @@
 // control flow is provable offline: it brackets the raw text as `said`, derives one
 // step, and leaves entailed/assuming/fork empty (nothing to infer without an LLM).
 
+import { extractJson } from './parse.js';
+
 // Make an elaborator bound to an LLM runner. Mock-first: with no `ask`, returns the
 // deterministic local elaborator (no claude spawn) — same discipline as the rest.
 export function makeElaborator({ ask } = {}) {
@@ -38,19 +40,29 @@ export function localElaborate(input, _ctx = {}) {
   };
 }
 
-// Live shape (wired in P1). Kept here so the contract is visible; not exercised in P0.
+// Live shape (P1). Ask for the seam as JSON, parse it, and always keep the verbatim
+// `said` + a non-empty `steps` so the planner has something to weave even if the model
+// returns junk (fail-soft to the one-step decomposition).
 async function liveElaborate(input, ctx, ask) {
   const raw = typeof input === 'string' ? input : input.raw;
   const prompt =
-    `Elaborate this injected request into intent. Expose the seam: what was SAID ` +
-    `(verbatim), what is ENTAILED (each point must cite a source — file, goal, or prior ` +
-    `decision; if it can't be sourced, demote it to ASSUMING), what you are ASSUMING ` +
-    `(calibrate toward this when unsure), and any FORK (an irreversible choice that ` +
-    `can't be derived — the only thing worth asking about). Then decompose into one or ` +
-    `more concrete steps. Unpack freely, extrapolate never. Depth is proportional to ` +
-    `reversibility.\n\nGoal: ${ctx.goal || '(unknown)'}\nInput: ${raw}`;
+    `Elaborate this injected request into intent, exposing the seam between what was said ` +
+    `and what you're inferring.\n\nGoal: ${ctx.goal || '(unknown)'}\nInput: ${raw}\n\n` +
+    `Return ONLY JSON: {"said":"<verbatim>","entailed":["<sourced consequence>"],` +
+    `"assuming":["<inference you'd veto-check>"],"fork":"<irreversible choice or null>",` +
+    `"steps":[{"intent":"<concrete step>"}]}. Unpack freely, extrapolate never; an entailed ` +
+    `point must trace to evidence or it's an assumption; calibrate toward assuming.`;
   const out = await ask(prompt);
-  // The live parser/contract is a P1 concern; for now pass the raw model text through
-  // alongside the verbatim said so nothing is silently dropped.
-  return { id: typeof input === 'object' ? input.id : null, said: raw, raw: out, steps: [{ intent: raw }] };
+  const p = extractJson(out) || {};
+  const steps = Array.isArray(p.steps) && p.steps.length
+    ? p.steps.map((s) => (typeof s === 'string' ? { intent: s } : { intent: s.intent || raw }))
+    : [{ intent: raw }];
+  return {
+    id: typeof input === 'object' ? input.id : null,
+    said: p.said || raw,
+    entailed: Array.isArray(p.entailed) ? p.entailed : [],
+    assuming: Array.isArray(p.assuming) ? p.assuming : [],
+    fork: p.fork || null,
+    steps,
+  };
 }
