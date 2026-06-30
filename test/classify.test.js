@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classify, tokenize, scorePrompt, makeLLMClassifier } from '../src/pharos/classify.js';
+import { classify, tokenize, scorePrompt, makeLLMClassifier, localConfident, CONFIDENT_MARGIN } from '../src/pharos/classify.js';
 
 test('LLM classifier routes by the model reply (no keyword needed)', async () => {
   // "make a website" has no obvious keyword for the scorer, but Pharos reads it.
@@ -62,4 +62,36 @@ test('multi-word terms phrase-match with a bonus', () => {
 
 test('tokenize drops stopwords and single chars', () => {
   assert.deepEqual(tokenize("what's up code"), ['code']);
+});
+
+// localConfident — the gate that decides whether a live turn skips the LLM router.
+test('localConfident: terse follow-up that stuck to the current Keeper is confident', () => {
+  const d = classify('ship it', { currentKeeper: 'ptah' });
+  assert.equal(d.reason, 'sticky-below-floor');
+  assert.equal(localConfident(d), true); // no domain signal → model would keep it here too
+});
+
+test('localConfident: a clear keyword winner with a wide margin is confident', () => {
+  const d = classify('fix the bug in the hook'); // strong code vocab, no rival domain
+  assert.equal(d.reason, 'argmax');
+  assert.ok(d.margin >= CONFIDENT_MARGIN);
+  assert.equal(localConfident(d), true);
+});
+
+test('localConfident: a hysteresis near-tie is NOT confident (escalate to the model)', () => {
+  const d = classify('remind me to refactor', { currentKeeper: 'ra' });
+  assert.equal(d.reason, 'sticky-hysteresis');
+  assert.equal(localConfident(d), false);
+});
+
+test('localConfident: cold-start intake with no vocab is NOT confident (escalate)', () => {
+  const d = classify('tell me a joke');
+  assert.equal(d.reason, 'below-floor->intake');
+  assert.equal(localConfident(d), false);
+});
+
+test('localConfident: a thin-margin argmax is NOT confident (escalate)', () => {
+  // Hand-built decision: argmax but the runner-up is one point behind.
+  assert.equal(localConfident({ reason: 'argmax', margin: CONFIDENT_MARGIN - 1 }), false);
+  assert.equal(localConfident(null), false);
 });

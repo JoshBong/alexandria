@@ -42,6 +42,30 @@ test('an inactive/unknown route still falls back to intake', async () => {
   assert.match(r.note, /no 'seshat' Keeper/);
 });
 
+// Local-first routing: the LLM router (opts.ask) is a cold haiku spawn live, so a
+// confident local route must NOT call it; an ambiguous one must.
+test('confident local route skips the LLM router (no ask spawn)', async () => {
+  let askCalls = 0;
+  const ask = async () => { askCalls++; return 'ra'; }; // would mis-route if it ran
+  // (a) strong keyword winner, (b) terse follow-up that sticks — both confident.
+  const r1 = await handle('refactor the classifier scoring function', { mock: true, reg: freshReg(), persist: false, store: emptyStore, ask });
+  assert.equal(r1.routed, 'ptah');
+  const stickyReg = { current: 'ptah', sessions: { ptah: { sessionId: 'mock-ptah', started: true } } };
+  const r2 = await handle('does it pass now', { mock: true, reg: stickyReg, persist: false, store: emptyStore, ask });
+  assert.equal(r2.routed, 'ptah');
+  assert.equal(askCalls, 0); // neither turn paid the router spawn
+});
+
+test('ambiguous local route escalates to the LLM router (ask decides)', async () => {
+  let askCalls = 0;
+  const ask = async () => { askCalls++; return 'ptah'; };
+  // "remind me to refactor" in Ra = sticky-hysteresis near-tie → not confident → escalate.
+  const reg = { current: 'ra', sessions: { ra: { sessionId: 'mock-ra', started: true } } };
+  const r = await handle('remind me to refactor', { mock: true, reg, persist: false, store: emptyStore, ask });
+  assert.equal(askCalls, 1);        // the router ran
+  assert.equal(r.routed, 'ptah');   // and its verdict won over the local sticky default
+});
+
 test('a switch is flagged when the Keeper changes', async () => {
   const reg = { current: 'ptah', sessions: { ptah: { sessionId: 'mock-ptah', started: true } } };
   const r = await handle('book the flight to sri lanka', { mock: true, reg, persist: false, store: emptyStore });

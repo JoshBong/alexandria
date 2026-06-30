@@ -81,6 +81,27 @@ export function classify(prompt, opts = {}) {
   return { routed, alias: keeper.alias || routed, top: topId, topScore, margin, reason, scores };
 }
 
+// How decisively the keyword winner must lead the runner-up before a LIVE turn TRUSTS
+// the local route and skips the LLM router. Terms are weighted 1/2/3, so a margin of 3
+// is a full strong-term lead — wide enough that a model read wouldn't plausibly disagree.
+export const CONFIDENT_MARGIN = 3;
+
+// Is the local (keyword) decision confident enough to skip the LLM router (a cold
+// `claude -p` haiku spawn, ~5s)? Two safe cases:
+//   - sticky-below-floor: a terse follow-up with NO domain signal at all, kept in the
+//     current Keeper. The model — told it's a short follow-up — would keep it there too.
+//   - a clear keyword winner (argmax) leading the runner-up by CONFIDENT_MARGIN.
+// Everything else — thin-margin argmax, hysteresis near-ties, cold-start intake with no
+// vocab — is genuinely ambiguous and escalates to the model, which reads intent where
+// keywords are weak. This is the gate that keeps the common case ("hi", "ship it", a
+// vocab-rich request) off the spawn while preserving the LLM exactly where it earns it.
+export function localConfident(decision) {
+  if (!decision) return false;
+  if (decision.reason === 'sticky-below-floor') return true;
+  if (decision.reason === 'argmax' && (decision.margin ?? 0) >= CONFIDENT_MARGIN) return true;
+  return false;
+}
+
 // LLM routing — Pharos READS the message and picks a domain, the way a person
 // (or any model) trivially would. This is the real classifier in live mode; the keyword
 // scorer above is the offline/mock path AND the safety net if the model call fails.

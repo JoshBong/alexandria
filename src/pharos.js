@@ -5,7 +5,7 @@
 // updates the registry. Inactive Keepers (no live session yet, e.g. Thoth/Horus
 // in Phase 1) fall back to intake (Anubis) with a note.
 
-import { classify, makeLLMClassifier } from './pharos/classify.js';
+import { classify, makeLLMClassifier, localConfident } from './pharos/classify.js';
 import { KEEPERS } from './pharos/keepers.js';
 import { loadRegistry, saveRegistry } from './pharos/registry.js';
 import { runTurn } from './keeper.js';
@@ -32,13 +32,25 @@ export async function handle(prompt, opts = {}) {
   // injected) — so mock tests never spawn a real `claude` even if a flag leaked on.
   const wantLLM = (flag) => flag && (!mock || !!opts.ask);
 
-  // Routing is LLM-first: when an `ask` runner is available (live — the entrypoint
-  // injects askOnce), Pharos READS the message and picks the domain. Without a
-  // runner (mock / offline tests) it falls back to the keyword scorer — which also stays
-  // the safety net inside makeLLMClassifier if the model call fails. opts.classify still
-  // overrides everything (tests of the routing/fallback seam).
-  const classifyFn = opts.classify || (opts.ask ? makeLLMClassifier({ run: opts.ask }) : classify);
-  const decision = await classifyFn(prompt, { currentKeeper: reg.current });
+  // Routing is local-FIRST: the free keyword scorer (classify) runs every turn in
+  // microseconds. We only pay the LLM router — a cold `claude -p` haiku spawn, ~5s and
+  // the single biggest slice of per-turn latency — when the local read is genuinely
+  // ambiguous (localConfident false: thin-margin win, hysteresis near-tie, cold-start
+  // intake with no vocab). A confident local route (a terse follow-up that stays put, or
+  // a clear keyword winner) skips the spawn entirely — that's the common case ("hi",
+  // "ship it", a vocab-rich request). The LLM stays the adjudicator exactly where
+  // keywords are weak, and remains the safety net inside makeLLMClassifier if its call
+  // fails. opts.classify still overrides everything (routing/fallback seam tests); the
+  // mock/offline path (no opts.ask) uses the keyword scorer alone, unchanged.
+  let decision;
+  if (opts.classify) {
+    decision = await opts.classify(prompt, { currentKeeper: reg.current });
+  } else {
+    const local = classify(prompt, { currentKeeper: reg.current });
+    decision = (opts.ask && !localConfident(local))
+      ? await makeLLMClassifier({ run: opts.ask })(prompt, { currentKeeper: reg.current })
+      : local;
+  }
   let routed = decision.routed;
   let note = decision.reason;
 
