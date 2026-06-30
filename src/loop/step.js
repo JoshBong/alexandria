@@ -12,13 +12,17 @@
 // P0 proves the cycle with mocks and no claude spawn. Returns the step's outcome; it
 // does NOT mutate the plan (the driver marks/locks at the boundary).
 
+import { isPlateau, attemptTargets } from './plateau.js';
+
 export const DEFAULT_ATTEMPT_BUDGET = 3;
 
 // Run one step to a terminal outcome. opts:
-//   handle(prompt, ctx) → { text, contextTokens, compacting, degraded, ... } (Pharos turn)
+//   handle(prompt, ctx) → { text, contextTokens, compacting, degraded, touched, ... }
 //   verify(step, result, ctx) → { pass, feedback }  (ground-truth check; default: always pass)
 //   budget — max attempts before parking (default 3)
-// Returns: { status: 'done'|'parked', attempts, result, verify, signals }
+//   plateau — { window, threshold } override for the thrash kill-switch (default plateau.js)
+// Returns: { status: 'done'|'parked', attempts, result, verify, signals, reason? }
+//   reason on a park: 'plateau' (thrashing the same targets) | 'budget' (attempts spent).
 export async function runStep(step, opts = {}) {
   const handle = opts.handle || (async (p) => ({ text: `(mock) ${p}` }));
   const verify = opts.verify || (async () => ({ pass: true }));
@@ -28,6 +32,7 @@ export async function runStep(step, opts = {}) {
   let result = null;
   let check = null;
   let feedback = null;
+  const touchHistory = []; // the SET of targets each attempt touched, in order
 
   while (attempts < budget) {
     attempts += 1;
@@ -42,11 +47,19 @@ export async function runStep(step, opts = {}) {
       return { status: 'done', attempts, result, verify: check, signals: pickSignals(result) };
     }
     feedback = check ? check.feedback : 'verification failed';
+
+    // Plateau kill-switch — if the retries keep thrashing the same targets, parking now
+    // beats burning the rest of the budget on the same corner (budget bounds count, this
+    // bounds churn). No touch-data → never trips, so mock cycles are unaffected.
+    touchHistory.push(attemptTargets(result));
+    if (isPlateau(touchHistory, opts.plateau)) {
+      return { status: 'parked', attempts, result, verify: check, signals: pickSignals(result), reason: 'plateau' };
+    }
   }
 
   // Budget spent without a pass → park (parking counts as progress; the watchdog,
   // not this, catches a plan that goes nowhere).
-  return { status: 'parked', attempts, result, verify: check, signals: pickSignals(result) };
+  return { status: 'parked', attempts, result, verify: check, signals: pickSignals(result), reason: 'budget' };
 }
 
 // The freshness-relevant signals handle() already returns — the driver reads these at
