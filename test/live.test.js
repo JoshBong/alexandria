@@ -59,6 +59,16 @@ test('makeDomainVerify: per-Keeper verifier, then contract, then structural fall
   assert.equal((await verify({}, { keeper: 'ra', text: 'ok' })).pass, true); // structural: clean
 });
 
+test('makeDomainVerify: contract enforced only when the result reports satisfied (else structural)', async () => {
+  const contract = { checks: [{ id: 'a' }] };
+  const verify = makeDomainVerify({});
+  // no satisfied signal (handle() never surfaces it) → structural pass, NOT an auto-park
+  assert.equal((await verify({ contract }, { text: 'answered' })).pass, true);
+  // a producer that DOES report satisfaction → the contract gates as designed
+  assert.equal((await verify({ contract }, { satisfied: ['a'] })).pass, true);
+  assert.equal((await verify({ contract }, { satisfied: [] })).pass, false);
+});
+
 // ---- makeLiveReview / makeLiveSelfwrite ----
 
 test('makeLiveReview: parses a verdict, fail-soft to approved on junk', async () => {

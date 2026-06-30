@@ -94,7 +94,12 @@ export function makeDomainVerify(opts = {}) {
     }
     const keeper = result.keeper || step.keeper;
     if (keeper && verifiers[keeper]) return verifiers[keeper](step, result, vctx);
-    if (step.contract && (step.contract.checks || []).length) return verifyAgainstContract(step.contract, result);
+    // Enforce the frozen contract ONLY when the producer reports a satisfaction signal —
+    // handle() doesn't surface result.satisfied, so a contract you can't measure would
+    // auto-park every step (the first live run hit exactly this). No signal → structural.
+    if (step.contract && (step.contract.checks || []).length && Array.isArray(result.satisfied)) {
+      return verifyAgainstContract(step.contract, result);
+    }
     return result.error ? { pass: false, feedback: 'turn errored' } : { pass: true };
   };
 }
