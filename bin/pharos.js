@@ -580,6 +580,14 @@ async function startBox() {
 
   let buf = '';
   let curIdx = 0;
+  // Bracketed-paste capture: a multi-line paste is stashed whole and shown as a compact
+  // `[Pasted text #N +L lines]` token in the box (the box is a single char-wrapping line —
+  // it can't render the newlines), then expanded back to the full text on submit.
+  let pasting = false;
+  let pasteBuf = '';
+  let pasteCount = 0;
+  const pastes = new Map(); // id → full pasted text, expanded into the line at submit
+  const expandPastes = (s) => String(s).replace(/\[Pasted text #(\d+) \+\d+ lines\]/g, (m, id) => (pastes.has(+id) ? pastes.get(+id) : m));
   const prefix = PROMPT;
   let activeId = null; // the Keeper that answered last — highlighted bold+white in the HUD roster
   const ctxById = new Map(); // keeperId(lower) → { ctx, reseed } : each Keeper's OWN session load
@@ -724,6 +732,7 @@ async function startBox() {
     drawBox();
   };
   const teardown = () => {
+    if (TTY) w('\x1b[?2004l'); // disable bracketed paste
     w('\x1b[r'); // release the scroll region
     const top = boxTopRow();
     for (let k = -1; k < boxH; k += 1) w(`\x1b[${top + k};1H\x1b[2K`); // clear spinner row + box rows
@@ -754,10 +763,12 @@ async function startBox() {
   // queue; the box clears so you can immediately type the next one.
   const submit = (line) => {
     buf = ''; curIdx = 0; drawBox();
+    const expanded = expandPastes(line || '').trim(); // full text (pastes restored) for the Keeper
+    pastes.clear(); pasteCount = 0; // the line left the box — its pastes are consumed
     const p = (line || '').trim();
-    if (p) out(`  ${C.deep}⟡${C.reset} ${C.sand}${p}${C.reset}`); // echo into the transcript
-    if (!p) return;
-    queue.push(line);
+    if (p) out(`  ${C.deep}⟡${C.reset} ${C.sand}${p}${C.reset}`); // echo the compact placeholder form
+    if (!expanded) return;
+    queue.push(expanded);
     drain();
   };
 
@@ -793,6 +804,20 @@ async function startBox() {
   const onKey = (str, key) => {
     key = key || {};
     if (menu) return onMenuKey(str, key); // menu owns the keyboard while open
+    // Bracketed paste: buffer the whole block, never let an embedded newline submit it.
+    if (key.name === 'paste-start') { pasting = true; pasteBuf = ''; return; }
+    if (key.name === 'paste-end') {
+      pasting = false;
+      const text = pasteBuf.replace(/\r\n?/g, '\n'); // normalise CRLF/CR → LF
+      pasteBuf = '';
+      const lines = text.split('\n').length;
+      let ins;
+      if (lines > 1) { pasteCount += 1; pastes.set(pasteCount, text); ins = `[Pasted text #${pasteCount} +${lines} lines]`; }
+      else ins = text; // single-line paste flows inline (the box wraps it)
+      buf = buf.slice(0, curIdx) + ins + buf.slice(curIdx); curIdx += ins.length;
+      return drawBox();
+    }
+    if (pasting) { if (typeof str === 'string') pasteBuf += str; return; } // accumulate, redraw once at paste-end
     if (key.ctrl && key.name === 'c') return finish();
     if (key.ctrl && key.name === 'd') return buf.length ? null : finish();
     if (key.name === 'return' || key.name === 'enter') return submit(buf);
@@ -810,6 +835,7 @@ async function startBox() {
   // Pin the box at the bottom and open the scroll region above it. The boot screen stays
   // on view and scrolls up into history naturally as the conversation grows.
   if (stdin.setRawMode) stdin.setRawMode(true);
+  if (TTY) w('\x1b[?2004h'); // enable bracketed paste → readline emits paste-start/paste-end
   stdin.resume();
   sync();
   setRegion();
