@@ -596,12 +596,13 @@ async function startBox() {
     return `  ${C.bronze}${rule()}${C.reset}`;
   };
 
-  // The scroll region's top is row 1 — content scrolls into NATIVE scrollback (a region
-  // anchored below row 1 silently discards scrolled-off lines, which is exactly what broke
-  // scroll-up and smeared the old frozen top navbar through the transcript). Only the
-  // BOTTOM box is pinned; the roster lives in its HUD border (botBorder) with the active
-  // Keeper highlighted, so "who answered" is always visible without freezing any top rows.
-  const regionTop = 1;
+  // Row 1 is the PINNED ROSTER NAVBAR (drawNav) — the Keepers + ctx meter live at the TOP,
+  // always visible while the transcript scrolls in the region BELOW it (rows 2…contentBottom).
+  // The earlier frozen-top attempt smeared because nothing repainted the scrolled rows; now
+  // paintTranscript() redraws the region from `history` and PgUp/PgDn give in-app scrollback,
+  // so a row-1 navbar is clean. (Trade: the transcript's NATIVE scrollback top is sacrificed
+  // for the one navbar row — acceptable now that scrollback paging exists.)
+  const regionTop = 2;
 
   // The editable line lives in input.js's reducer state ({buf,curIdx,history,histIdx,draft,
   // pendingExit}); onKey is now a thin I/O shell that runs the reducer and applies its action.
@@ -661,11 +662,15 @@ async function startBox() {
     }
     return winTok ? `${roster} ${C.dim}· /${fmtK(winTok)}${C.reset}` : roster;
   };
-  const botBorder = () => {
+  // The pinned roster navbar (row 1, outside the scroll region) — the Keepers + ctx meter,
+  // active one bold+white, always visible at the TOP while the transcript scrolls beneath.
+  const drawNav = () => {
     const stat = hudStat();
     const rail = Math.max(2, W() - visLen(stat) - 3);
-    return `  ${C.bronze}${'─'.repeat(rail)}${C.reset} ${stat} ${C.bronze}─${C.reset}`;
+    w(`\x1b[1;1H\x1b[2K  ${C.bronze}${'─'.repeat(rail)}${C.reset} ${stat} ${C.bronze}─${C.reset}`);
   };
+  // The box's bottom border is now a plain rule — the roster moved up to the navbar.
+  const botBorder = () => `  ${C.bronze}${rule()}${C.reset}`;
 
   // The box is PINNED at the bottom. The transcript scrolls in a region ABOVE it, and
   // when a Keeper is thinking one extra row above the box is reserved for the spinner and
@@ -682,9 +687,23 @@ async function startBox() {
 
   const drawBox = () => {
     sync();
-    setRegion(); // region matched to box height (+ spinner row when thinking)
     const top = boxTopRow();
+    // The box changed height (a multi-line input grew it, a delete/submit shrank it back) →
+    // the rows it used to occupy that now sit ABOVE the new box are stale. Wipe the old
+    // footprint and repaint the transcript so old top-rules / input lines don't strand above
+    // the box. (onResize does the same wipe on a terminal resize; this is the type-driven case
+    // that was leaving the `────` ladder Josh saw.)
+    if (lastBoxTop != null && (top !== lastBoxTop || boxH !== lastBoxH)) {
+      for (let k = -1; k <= lastBoxH; k += 1) {
+        const r = lastBoxTop + k;
+        if (r >= regionTop && r <= out0.rows) w(`\x1b[${r};1H\x1b[2K`);
+      }
+      setRegion();
+      paintTranscript(); // refill the freed rows from history (clears each row as it writes)
+    }
+    setRegion(); // region matched to box height (+ spinner row when thinking)
     lastBoxTop = top; lastBoxH = boxH; // remember this footprint so a resize can wipe it
+    drawNav(); // the pinned roster navbar on row 1
     w(`\x1b[${top};1H\x1b[2K${bar()}`);
     if (menu) {
       const ls = menuLines(menu, menuView);
@@ -712,14 +731,14 @@ async function startBox() {
   const maxScroll = () => Math.max(0, history.length - regionRows());
   // Repaint the transcript region from `history` at the current scrollOff (0 = live tail).
   // Absolute-addressed, so it overlays the natural-scroll output cleanly while paging.
-  const renderScroll = () => {
+  const paintTranscript = () => {
     const rows = regionRows();
     const start = Math.max(0, history.length - rows - scrollOff);
     for (let i = 0; i < rows; i += 1) {
       w(`\x1b[${regionTop + i};1H\x1b[2K${history[start + i] ?? ''}`);
     }
-    drawBox(); // box + cursor back on top
   };
+  const renderScroll = () => { paintTranscript(); drawBox(); }; // transcript + box/cursor back on top
 
   // Print into the scrolling transcript above the box. Natural scroll idiom: each line
   // scrolls the region up by one and prints at its bottom — so every echo and answer is
@@ -787,6 +806,7 @@ async function startBox() {
     if (kittyKeys) w('\x1b[<u'); // pop the kitty keyboard-protocol flags we pushed
     if (TTY) w('\x1b[?2004l'); // disable bracketed paste
     w('\x1b[r'); // release the scroll region
+    w('\x1b[1;1H\x1b[2K'); // clear the pinned navbar row
     const top = boxTopRow();
     for (let k = -1; k < boxH; k += 1) w(`\x1b[${top + k};1H\x1b[2K`); // clear spinner row + box rows
     w(`\x1b[${top};1H\x1b[?25h`);
@@ -854,6 +874,30 @@ async function startBox() {
     drawBox();
   };
 
+  // Ctrl+Z: suspend to the parent shell like any well-behaved program. Raw mode disables the
+  // terminal's signal generation, so the keystroke arrives as a plain key — we restore the
+  // terminal, raise SIGTSTP ourselves, and on resume (fg) re-arm raw mode and redraw from
+  // history. Without this, Ctrl+Z just does nothing in the box.
+  const suspend = () => {
+    teardown(); // cooked mode, show cursor, release region, pop kitty/paste, drop resize listener
+    stdin.removeListener('keypress', onKey);
+    process.once('SIGCONT', () => {
+      if (stdin.setRawMode) stdin.setRawMode(true);
+      if (TTY) w('\x1b[?2004h');
+      if (kittyKeys) w('\x1b[>1u');
+      stdin.resume();
+      stdin.on('keypress', onKey);
+      out0.on('resize', onResize);
+      lastBoxTop = null; // force a clean redraw (no stale-footprint wipe against a torn-down box)
+      if (TTY) w('\x1b[2J\x1b[3J\x1b[H');
+      setRegion();
+      renderScroll(); // repaint transcript + navbar + box
+    });
+    // SIGSTOP (not SIGTSTP) so we stop reliably — it can't be caught/blocked and isn't subject
+    // to the orphaned-process-group rule that silently drops SIGTSTP. `fg` resumes us via SIGCONT.
+    process.kill(process.pid, 'SIGSTOP');
+  };
+
   const onKey = (str, key) => {
     key = key || {};
     if (menu) return onMenuKey(str, key); // menu owns the keyboard while open
@@ -876,6 +920,7 @@ async function startBox() {
     if (key.name === 'pageup') { scrollOff = Math.min(maxScroll(), scrollOff + Math.max(1, regionRows() - 1)); return renderScroll(); }
     if (key.name === 'pagedown') { scrollOff = Math.max(0, scrollOff - Math.max(1, regionRows() - 1)); return renderScroll(); }
     if (scrollOff > 0) { scrollOff = 0; renderScroll(); } // typing/navigating snaps back to the live tail, then handle the key
+    if (key.ctrl && key.name === 'z') return suspend(); // Ctrl+Z → background to the shell like a normal program
     // kitty keyboard protocol: a key with no legacy encoding (Shift+Enter, Esc, …) arrives as
     // a CSI-u sequence readline can't classify — its raw bytes land in key.sequence. Decode it
     // into the normalized key the reducer understands (alt ⇒ meta). Everything else (printable,
