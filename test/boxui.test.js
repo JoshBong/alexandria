@@ -5,7 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { stripAnsi, visLen, layout, inputWindow, visualRows, wrapInput } from '../src/pharos/boxui.js';
+import { stripAnsi, visLen, charWidth, strWidth, layout, inputWindow, visualRows, wrapInput } from '../src/pharos/boxui.js';
 
 test('visLen ignores SGR colour codes and counts the marker as one cell', () => {
   assert.equal(visLen('\x1b[38;5;220m⟡\x1b[0m'), 1);
@@ -95,6 +95,48 @@ test('wrapInput: a trailing newline gives an empty continuation row for the curs
   assert.deepEqual(r.rows, ['ab', '']);
   assert.equal(r.cursorRow, 1);
   assert.equal(r.cursorCol, 2);
+});
+
+test('charWidth: CJK and emoji are two cells, combining is zero, ASCII is one', () => {
+  assert.equal(charWidth('a'.codePointAt(0)), 1);
+  assert.equal(charWidth('你'.codePointAt(0)), 2); // CJK Unified
+  assert.equal(charWidth('好'.codePointAt(0)), 2);
+  assert.equal(charWidth('가'.codePointAt(0)), 2); // Hangul syllable
+  assert.equal(charWidth('😀'.codePointAt(0)), 2); // emoji (astral)
+  assert.equal(charWidth(0x0301), 0); // combining acute accent
+  assert.equal(charWidth('⟡'.codePointAt(0)), 1); // the Alexandria marker stays one cell
+});
+
+test('strWidth/visLen count display cells, not code points', () => {
+  assert.equal(strWidth('你好'), 4); // two wide chars → four cells
+  assert.equal(strWidth('hi你'), 4); // 1 + 1 + 2
+  assert.equal(visLen('\x1b[38;5;220m你\x1b[0m'), 2); // ANSI stripped, wide char = 2
+  assert.equal(strWidth('😀'), 2);
+});
+
+test('wrapInput: CJK cursor uses display width, not char count (the drift fix)', () => {
+  // "你好" at end: 2 code points, but 4 display cells. Caret must sit at prefix+4, not prefix+2.
+  const r = wrapInput('你好', 2, 6, 2, 20);
+  assert.deepEqual(r.rows, ['你好']);
+  assert.equal(r.cursorRow, 0);
+  assert.equal(r.cursorCol, 10); // 6 (prefix) + 4 (two wide chars)
+  // caret between the two chars → prefix + 2
+  const mid = wrapInput('你好', 1, 6, 2, 20);
+  assert.equal(mid.cursorCol, 8);
+});
+
+test('wrapInput: an emoji (surrogate pair) is one caret step, two cells wide', () => {
+  const r = wrapInput('😀', 2, 6, 2, 20); // curIdx 2 = past the surrogate pair (one glyph)
+  assert.deepEqual(r.rows, ['😀']);
+  assert.equal(r.cursorCol, 8); // 6 + 2
+});
+
+test('wrapInput: wide chars wrap by cells — a row never overflows its cell budget', () => {
+  const buf = '字'.repeat(10); // each 2 cells
+  const r = wrapInput(buf, 0, 6, 2, 20); // firstCap 14 cells → 7 chars, contCap 18 → 9 chars
+  assert.equal([...r.rows[0]].length, 7); // 7 wide chars = 14 cells, fits firstCap exactly
+  assert.equal(strWidth(r.rows[0]) <= 14, true);
+  assert.equal(strWidth(r.rows[1]) <= 18, true);
 });
 
 test('visualRows counts wrap', () => {

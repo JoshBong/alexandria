@@ -33,6 +33,7 @@ export const SETTINGS_SCHEMA = [
   { key: 'model', kind: 'submenu', screen: 'model' },
   { key: 'sharedTools', kind: 'submenu', screen: 'tools' },
   { key: 'metrics', kind: 'bool' },
+  { key: 'kittyKeys', kind: 'bool' },
   { key: 'contextWindow', kind: 'num' },
   { key: 'mcpConfig', kind: 'str' },
   { key: 'reframe', kind: 'bool' },

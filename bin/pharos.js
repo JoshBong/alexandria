@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { getSettings, saveSettings } from '../src/pharos/settings.js';
 import { hasProfile, saveProfile, getProfile } from '../src/pharos/profile.js';
 import { layout, visLen, wrapInput } from '../src/pharos/boxui.js';
+import { initInput, reduceKey, parseCsiU } from '../src/pharos/input.js';
 import { collapseCode, mdRender } from '../src/pharos/render.js';
 import { initMenu, menuKey, MODEL_CHOICES, SHARED_TOOL_CHOICES, SETTINGS_SCHEMA } from '../src/pharos/menu.js';
 
@@ -231,7 +232,7 @@ function printMetrics(r) {
 // /settings — view and toggle. `/settings` lists; `/settings <key>` flips a bool;
 // `/settings <key> <value>` sets a string (sharedTools/mcpConfig). Writes through to
 // .pharos/settings.json so the next turn's getSettings() picks it up.
-const BOOL_KEYS = ['reframe', 'revoice', 'skipPerms', 'prewarm', 'metrics'];
+const BOOL_KEYS = ['reframe', 'revoice', 'skipPerms', 'prewarm', 'metrics', 'kittyKeys'];
 const STR_KEYS = ['model', 'sharedTools', 'mcpConfig'];
 const NUM_KEYS = ['contextWindow'];
 const SETTING_HELP = {
@@ -240,6 +241,7 @@ const SETTING_HELP = {
   skipPerms: 'boats run headless (skip permission prompts)',
   prewarm: 'warm all Keepers on startup',
   metrics: 'show the per-turn metrics line',
+  kittyKeys: 'enable Shift+Enter (kitty keyboard protocol; ghostty/kitty/WezTerm)',
   model: 'which model the Keepers run on (e.g. sonnet, opus, haiku)',
   sharedTools: 'extra built-in tools every Keeper can load on demand',
   mcpConfig: 'shared MCP connector config (browser/Gmail/…) for every Keeper',
@@ -584,7 +586,15 @@ async function startBox() {
   let L = layout(out0.rows, boxH);
   const cols = () => out0.columns || 80;
   const w = (s) => out0.write(s);
-  const bar = () => `  ${C.bronze}${rule()}${C.reset}`;
+  const bar = () => {
+    if (scrollOff > 0) { // paging through history — show position + how to get back to live
+      const above = Math.max(0, history.length - regionRows() - scrollOff);
+      const tag = `↑ scrolled${above ? ` · ${above} above` : ' · top'} · PgDn → live `;
+      const fill = Math.max(8, W() - visLen(tag) - 2);
+      return `  ${C.gold}${tag}${C.bronze}${'─'.repeat(fill)}${C.reset}`;
+    }
+    return `  ${C.bronze}${rule()}${C.reset}`;
+  };
 
   // The scroll region's top is row 1 — content scrolls into NATIVE scrollback (a region
   // anchored below row 1 silently discards scrolled-off lines, which is exactly what broke
@@ -593,8 +603,10 @@ async function startBox() {
   // Keeper highlighted, so "who answered" is always visible without freezing any top rows.
   const regionTop = 1;
 
-  let buf = '';
-  let curIdx = 0;
+  // The editable line lives in input.js's reducer state ({buf,curIdx,history,histIdx,draft,
+  // pendingExit}); onKey is now a thin I/O shell that runs the reducer and applies its action.
+  let edit = initInput();
+  const kittyKeys = TTY && cfg.kittyKeys !== false; // kitty keyboard protocol → real Shift+Enter
   // Bracketed-paste capture: a multi-line paste is stashed whole and shown as a compact
   // `[Pasted text #N +L lines]` token in the box (the box is a single char-wrapping line —
   // it can't render the newlines), then expanded back to the full text on submit.
@@ -608,13 +620,18 @@ async function startBox() {
   const ctxById = new Map(); // keeperId(lower) → { ctx, reseed } : each Keeper's OWN session load
   let winTok = 0; // the context window (denominator), shown once at the end of the roster
   let spinning = false; // a thinking line is reserved on the row just above the box
+  // Scrollback: every transcript line is retained here so the user can page UP through
+  // earlier chat (the scroll region discards lines off its top — native scrollback can't
+  // recover them). scrollOff = lines paged up from the live bottom (0 = live).
+  const history = [];
+  let scrollOff = 0;
   let menu = null; // menu.js reducer state while the /settings menu owns the keyboard
   let menuView = null; // row snapshot the reducer reads; rebuilt after each write
   let menuResolve = null; // resolves the openMenu() promise on close (unpauses the drain loop)
 
   // Wrap the current input across as many rows as it needs (long input flows to the next
   // line instead of scrolling sideways), and keep boxH/L in sync with that height.
-  const measure = () => wrapInput(buf, curIdx, visLen(prefix), GUTTER, cols());
+  const measure = () => wrapInput(edit.buf, edit.curIdx, visLen(prefix), GUTTER, cols());
   // Box height = top rule + content rows + bottom border. Content is the menu when open,
   // otherwise the (wrapped) input line.
   const sync = () => { boxH = (menu ? menuLines(menu, menuView).length : measure().rows.length) + 2; L = layout(out0.rows, boxH); };
@@ -690,14 +707,34 @@ async function startBox() {
     drawBox();
   };
 
+  // Visible transcript rows (the scroll region's height) and the furthest we can page up.
+  const regionRows = () => Math.max(1, contentBottom() - regionTop + 1);
+  const maxScroll = () => Math.max(0, history.length - regionRows());
+  // Repaint the transcript region from `history` at the current scrollOff (0 = live tail).
+  // Absolute-addressed, so it overlays the natural-scroll output cleanly while paging.
+  const renderScroll = () => {
+    const rows = regionRows();
+    const start = Math.max(0, history.length - rows - scrollOff);
+    for (let i = 0; i < rows; i += 1) {
+      w(`\x1b[${regionTop + i};1H\x1b[2K${history[start + i] ?? ''}`);
+    }
+    drawBox(); // box + cursor back on top
+  };
+
   // Print into the scrolling transcript above the box. Natural scroll idiom: each line
   // scrolls the region up by one and prints at its bottom — so every echo and answer is
-  // permanent and scrolls up in order (multiple queued prompts all stay visible).
+  // permanent and scrolls up in order (multiple queued prompts all stay visible). Every
+  // line is also retained in `history` for scrollback.
   const out = (s = '') => {
     sync();
+    const lines = String(s).split('\n');
+    for (const ln of lines) history.push(ln);
+    // Paging up: don't disturb the view — buffer the output and hold the reader's position
+    // (shift the offset by what arrived so the same lines stay on screen).
+    if (scrollOff > 0) { scrollOff = Math.min(maxScroll(), scrollOff + lines.length); renderScroll(); return; }
     const bottom = contentBottom();
     w(`\x1b[${regionTop};${bottom}r`);
-    for (const ln of String(s).split('\n')) {
+    for (const ln of lines) {
       w(`\x1b[${bottom};1H\n`);
       w(`\x1b[${bottom};1H\x1b[2K${ln}`);
     }
@@ -747,6 +784,7 @@ async function startBox() {
     drawBox();
   };
   const teardown = () => {
+    if (kittyKeys) w('\x1b[<u'); // pop the kitty keyboard-protocol flags we pushed
     if (TTY) w('\x1b[?2004l'); // disable bracketed paste
     w('\x1b[r'); // release the scroll region
     const top = boxTopRow();
@@ -777,7 +815,7 @@ async function startBox() {
   // Enter → the line leaves the box at once (echoed into the transcript) and joins the
   // queue; the box clears so you can immediately type the next one.
   const submit = (line) => {
-    buf = ''; curIdx = 0; drawBox();
+    drawBox(); // the reducer already cleared edit.buf — repaint the now-empty box
     const expanded = expandPastes(line || '').trim(); // full text (pastes restored) for the Keeper
     pastes.clear(); pasteCount = 0; // the line left the box — its pastes are consumed
     const p = (line || '').trim();
@@ -829,30 +867,42 @@ async function startBox() {
       let ins;
       if (lines > 1) { pasteCount += 1; pastes.set(pasteCount, text); ins = `[Pasted text #${pasteCount} +${lines} lines]`; }
       else ins = text; // single-line paste flows inline (the box wraps it)
-      buf = buf.slice(0, curIdx) + ins + buf.slice(curIdx); curIdx += ins.length;
+      edit = { ...edit, buf: edit.buf.slice(0, edit.curIdx) + ins + edit.buf.slice(edit.curIdx), curIdx: edit.curIdx + ins.length };
       return drawBox();
     }
     if (pasting) { if (typeof str === 'string') pasteBuf += str; return; } // accumulate, redraw once at paste-end
-    if (key.ctrl && key.name === 'c') return finish();
-    if (key.ctrl && key.name === 'd') return buf.length ? null : finish();
-    // Shift/Alt+Enter (terminal sends ESC+CR → meta+return) inserts a hard line break.
-    if (key.meta && (key.name === 'return' || key.name === 'enter')) { buf = buf.slice(0, curIdx) + '\n' + buf.slice(curIdx); curIdx += 1; return drawBox(); }
-    if (key.name === 'return' || key.name === 'enter') return submit(buf);
-    if (key.name === 'backspace') { if (curIdx > 0) { buf = buf.slice(0, curIdx - 1) + buf.slice(curIdx); curIdx -= 1; } return drawBox(); }
-    if (key.ctrl && key.name === 'u') { buf = buf.slice(curIdx); curIdx = 0; return drawBox(); }
-    if (key.ctrl && key.name === 'a') { curIdx = 0; return drawBox(); }
-    if (key.ctrl && key.name === 'e') { curIdx = buf.length; return drawBox(); }
-    if (key.name === 'left') { if (curIdx > 0) curIdx -= 1; return drawBox(); }
-    if (key.name === 'right') { if (curIdx < buf.length) curIdx += 1; return drawBox(); }
-    if (key.name === 'home') { curIdx = 0; return drawBox(); }
-    if (key.name === 'end') { curIdx = buf.length; return drawBox(); }
-    if (str && !key.ctrl && !key.meta && str >= ' ') { buf = buf.slice(0, curIdx) + str + buf.slice(curIdx); curIdx += str.length; return drawBox(); } // printable (incl. paste)
+    // Scrollback: PageUp/PageDown page through retained transcript history (a page = one
+    // region-height, minus a row of overlap for orientation). Any other key snaps to live.
+    if (key.name === 'pageup') { scrollOff = Math.min(maxScroll(), scrollOff + Math.max(1, regionRows() - 1)); return renderScroll(); }
+    if (key.name === 'pagedown') { scrollOff = Math.max(0, scrollOff - Math.max(1, regionRows() - 1)); return renderScroll(); }
+    if (scrollOff > 0) { scrollOff = 0; renderScroll(); } // typing/navigating snaps back to the live tail, then handle the key
+    // kitty keyboard protocol: a key with no legacy encoding (Shift+Enter, Esc, …) arrives as
+    // a CSI-u sequence readline can't classify — its raw bytes land in key.sequence. Decode it
+    // into the normalized key the reducer understands (alt ⇒ meta). Everything else (printable,
+    // Ctrl+letter, arrows) keeps its legacy encoding and flows through readline's key as-is.
+    const ku = kittyKeys ? parseCsiU(key.sequence) : null;
+    const nk = ku ? { name: ku.name, shift: ku.shift, ctrl: ku.ctrl, meta: ku.alt } : key;
+    const ch = ku ? '' : str;
+    // Everything else — editing, navigation, history, cancel — is decided by the pure reducer.
+    const { state, action } = reduceKey(edit, nk, ch);
+    edit = state;
+    switch (action.type) {
+      case 'submit': return submit(action.line);
+      case 'exit': return finish();
+      case 'hint-exit': return out(`  ${C.dim}press Ctrl+C again to exit${C.reset}`);
+      case 'redraw': return drawBox();
+      default: return undefined; // 'none'
+    }
   };
 
   // Pin the box at the bottom and open the scroll region above it. The boot screen stays
   // on view and scrolls up into history naturally as the conversation grows.
   if (stdin.setRawMode) stdin.setRawMode(true);
   if (TTY) w('\x1b[?2004h'); // enable bracketed paste → readline emits paste-start/paste-end
+  // Push the kitty keyboard-protocol "disambiguate escape codes" flag so Shift+Enter (and Esc)
+  // arrive as distinct CSI-u sequences. Surgical: keys with a legacy encoding (Ctrl+W, arrows,
+  // printables) are unaffected, so readline's parsing of them still works. Popped in teardown.
+  if (kittyKeys) w('\x1b[>1u');
   stdin.resume();
   sync();
   setRegion();

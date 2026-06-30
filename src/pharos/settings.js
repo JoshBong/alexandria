@@ -36,12 +36,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+//   kittyKeys — enable the kitty keyboard protocol on the TTY so Shift+Enter can be told
+//               apart from plain Enter (a plain terminal sends a bare CR for both). On a
+//               supporting terminal (ghostty/kitty/WezTerm/…) this is what makes Shift+Enter
+//               insert a newline. Default ON; the box also accepts a trailing "\" + Enter and
+//               Option+Enter as portable fallbacks, so turning this off loses only Shift+Enter.
 export const DEFAULTS = {
   reframe: false,
   revoice: false,
   skipPerms: true,
   prewarm: true,
   metrics: false,
+  kittyKeys: true,
 };
 
 // String-valued settings (not booleans) — resolved separately from the bool flags.
@@ -70,6 +76,7 @@ const ENV = {
   skipPerms: 'ALEXANDRIA_SKIP_PERMS',
   prewarm: 'ALEXANDRIA_PREWARM',
   metrics: 'ALEXANDRIA_METRICS',
+  kittyKeys: 'ALEXANDRIA_KITTY_KEYS',
 };
 
 const STRING_ENV = {

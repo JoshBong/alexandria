@@ -14,7 +14,46 @@
 // colour codes must not count as input width — that exact miscount is what made plain
 // readline mis-wrap and the cursor drift.
 export const stripAnsi = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, '');
-export const visLen = (s) => [...stripAnsi(s)].length;
+
+// Display width of a single code point in terminal CELLS. CJK / fullwidth / most emoji
+// occupy TWO cells; combining marks and zero-width chars occupy none; everything else is
+// one. A dependency-free wcwidth (covers the East-Asian + emoji blocks that matter for a
+// Taiwanese user typing Chinese) — counting these as one cell is what drifts the cursor.
+export function charWidth(cp) {
+  if (cp === 0) return 0;
+  if (cp < 32 || (cp >= 0x7f && cp < 0xa0)) return 0; // C0/C1 control
+  if (
+    (cp >= 0x0300 && cp <= 0x036f) || // combining diacriticals
+    (cp >= 0x1ab0 && cp <= 0x1aff) || (cp >= 0x1dc0 && cp <= 0x1dff) ||
+    (cp >= 0x200b && cp <= 0x200f) || cp === 0xfeff || // zero-width / BOM
+    (cp >= 0x20d0 && cp <= 0x20ff) || (cp >= 0xfe20 && cp <= 0xfe2f)
+  ) return 0;
+  if (
+    (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+    cp === 0x2329 || cp === 0x232a ||
+    (cp >= 0x2e80 && cp <= 0x303e) || // CJK radicals, Kangxi, symbols
+    (cp >= 0x3041 && cp <= 0x33ff) || // Hiragana … CJK compat
+    (cp >= 0x3400 && cp <= 0x4dbf) || // CJK Ext A
+    (cp >= 0x4e00 && cp <= 0x9fff) || // CJK Unified
+    (cp >= 0xa000 && cp <= 0xa4cf) || // Yi
+    (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul Syllables
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK Compatibility
+    (cp >= 0xfe10 && cp <= 0xfe19) || (cp >= 0xfe30 && cp <= 0xfe6f) || // vertical / compat forms
+    (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0xffe0 && cp <= 0xffe6) || // fullwidth forms
+    (cp >= 0x1f300 && cp <= 0x1faff) || // emoji, symbols & pictographs
+    (cp >= 0x20000 && cp <= 0x3fffd)    // CJK Ext B and beyond
+  ) return 2;
+  return 1;
+}
+
+// Visible width of a string in terminal CELLS (ANSI stripped, wide chars = 2). This is
+// the number the box layout cares about — NOT the code-point count.
+export const strWidth = (s) => {
+  let w = 0;
+  for (const ch of stripAnsi(String(s))) w += charWidth(ch.codePointAt(0));
+  return w;
+};
+export const visLen = strWidth;
 
 // 1-based row numbers for a terminal `rows` tall with the box occupying the bottom
 // BOX_H rows. scrollBottom is the last row of the scrolling output region.
@@ -65,41 +104,54 @@ export function wrapInput(buf, curIdx, prefixWidth, contIndent, cols) {
   let cursorRow = -1;
   let cursorCol = -1;
   const logical = buf.split('\n'); // hard line breaks (Shift+Enter) split into logical lines
-  let consumed = 0; // buf chars before the current logical line (each \n counts as one)
+  let consumed = 0; // buf UTF-16 units before the current logical line (each \n counts as one)
   for (let li = 0; li < logical.length; li += 1) {
     const line = logical[li];
     const lineStart = rows.length; // global visual-row index where this logical line begins
-    // Char-wrap this logical line; only the very first row of the whole buffer offsets by
-    // the prompt — every other row (continuations + later logical lines) sits at the gutter.
-    const lineRows = [];
-    if (line.length === 0) lineRows.push('');
-    else for (let pos = 0; pos < line.length; pos += (li === 0 && pos === 0 ? firstCap : contCap)) {
-      lineRows.push(line.slice(pos, pos + (li === 0 && pos === 0 ? firstCap : contCap)));
+    // Wrap this logical line by DISPLAY WIDTH (a wide char counts as 2 cells), tracking each
+    // visual row's UTF-16 start offset (u0) and width (w). Only the very first row of the whole
+    // buffer offsets by the prompt; continuations + later logical lines sit at the gutter.
+    const lineRows = []; // { text, u0, w }
+    if (line.length === 0) lineRows.push({ text: '', u0: 0, w: 0 });
+    else {
+      const chars = [...line]; // iterate by code point (surrogate-pair safe)
+      let u = 0; // UTF-16 offset within the line
+      let ci = 0;
+      while (ci < chars.length) {
+        const first = li === 0 && lineRows.length === 0;
+        const cap = first ? firstCap : contCap;
+        let text = ''; let w = 0; const u0 = u;
+        while (ci < chars.length) {
+          const cw = charWidth(chars[ci].codePointAt(0));
+          if (text.length && w + cw > cap) break; // row full — wrap (always emit ≥1 char)
+          text += chars[ci]; w += cw; u += chars[ci].length; ci += 1;
+        }
+        lineRows.push({ text, u0, w });
+      }
     }
     // Place the cursor if it falls within this logical line (inclusive of its trailing edge).
     if (cursorRow === -1 && curIdx >= consumed && curIdx <= consumed + line.length) {
-      let acc = 0;
+      const local = curIdx - consumed; // UTF-16 offset within this logical line
       for (let vi = 0; vi < lineRows.length; vi += 1) {
-        const rlen = lineRows[vi].length;
+        const { text, u0, w } = lineRows[vi];
         const cap = li === 0 && vi === 0 ? firstCap : contCap;
         const indent = li === 0 && vi === 0 ? prefixWidth : contIndent;
-        const off = curIdx - consumed;
-        if (off <= acc + rlen) {
-          const colOff = off - acc;
+        const rowEnd = u0 + text.length; // UTF-16 end offset of this row's text
+        if (local <= rowEnd) {
+          const colOff = strWidth(text.slice(0, local - u0)); // display cells from row start to caret
           // At a FULL row's trailing edge the caret wraps: to the next visual row if one
           // exists, else (end of buffer only) to a fresh row. Before a \n it stays put.
-          if (colOff === rlen && rlen === cap && (vi < lineRows.length - 1 || li === logical.length - 1)) {
-            if (vi < lineRows.length - 1) { acc += rlen; continue; }
+          if (local === rowEnd && w === cap && (vi < lineRows.length - 1 || li === logical.length - 1)) {
+            if (vi < lineRows.length - 1) continue; // the next row's u0 === rowEnd → placed there at the gutter
             cursorRow = lineStart + vi + 1; cursorCol = contIndent;
           } else {
             cursorRow = lineStart + vi; cursorCol = indent + colOff;
           }
           break;
         }
-        acc += rlen;
       }
     }
-    for (const r of lineRows) rows.push(r);
+    for (const r of lineRows) rows.push(r.text);
     consumed += line.length + 1; // skip the \n separator
   }
   if (cursorRow === -1) { cursorRow = 0; cursorCol = prefixWidth; } // empty buffer
