@@ -15,6 +15,43 @@
 
 const IDENT = (s) => s; // default style: no decoration (tests read plain text)
 
+const SENTINEL = ''; // private-use char to fence off code spans during inline passes
+
+// Render the common inline markdown a Keeper's answer arrives in (it's raw markdown, and a
+// terminal shows `**bold**`/`[t](url)` literally otherwise). Fence-aware: lines inside a
+// ``` block are left untouched (code is not prose). Pure + ANSI-free by construction — the
+// caller injects decorators via `style`, so tests read plain text (identity = markers
+// stripped). Handles: # headings, - * + bullets, **bold**/__bold__, *italic*/_italic_,
+// `code`, and [text](url). Anything fancier (tables, nested lists) passes through verbatim.
+export function mdRender(text, style = {}) {
+  const b = style.bold || IDENT;
+  const it = style.italic || IDENT;
+  const codeSpan = style.code || IDENT;
+  const link = style.link || ((t, u) => `${t} ${u}`);
+  const bullet = style.bullet || IDENT;
+  const heading = style.heading || IDENT;
+  const inline = (str) => {
+    const spans = [];
+    str = str.replace(/`([^`]+)`/g, (_, c) => { spans.push(c); return `${SENTINEL}${spans.length - 1}${SENTINEL}`; }); // protect code spans
+    str = str.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) => link(t, u));
+    str = str.replace(/\*\*([^*]+)\*\*/g, (_, t) => b(t));
+    str = str.replace(/__([^_]+)__/g, (_, t) => b(t));
+    str = str.replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, (_, pre, t) => `${pre}${it(t)}`);
+    str = str.replace(/(^|[^_\w])_([^_\s][^_]*?)_(?![_\w])/g, (_, pre, t) => `${pre}${it(t)}`);
+    return str.replace(new RegExp(`${SENTINEL}(\\d+)${SENTINEL}`, 'g'), (_, k) => codeSpan(spans[+k]));
+  };
+  let inFence = false;
+  return String(text ?? '').split('\n').map((line) => {
+    if (/^\s*```/.test(line)) { inFence = !inFence; return line; }
+    if (inFence) return line;
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (h) return heading(inline(h[2]));
+    const bm = /^(\s*)[-*+]\s+(.*)$/.exec(line);
+    if (bm) return `${bm[1]}${bullet('•')} ${inline(bm[2])}`;
+    return inline(line);
+  }).join('\n');
+}
+
 // Collapse fenced ``` code blocks in `text` whose body exceeds `maxLines`. Short blocks
 // and all prose are returned verbatim. opts:
 //   maxLines — body line count above which a block folds (default 14)

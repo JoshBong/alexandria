@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { collapseCode } from '../src/pharos/render.js';
+import { collapseCode, mdRender } from '../src/pharos/render.js';
 
 test('render: prose with no fences passes through untouched', () => {
   const t = 'just a plain answer\nwith two lines';
@@ -73,4 +73,30 @@ test('render: singular "1 more line folded" grammar', () => {
   const t = '```\n' + body + '\n```';
   const out = collapseCode(t, { maxLines: 5, preview: 7 });
   assert.match(out, /1 more line folded/);
+});
+
+// ---- mdRender: inline markdown → ANSI (identity style strips the markers) ----
+
+const MD = { bold: (s) => `<b>${s}</b>`, italic: (s) => `<i>${s}</i>`, code: (s) => `<c>${s}</c>`, link: (t, u) => `<a:${u}>${t}</a>`, bullet: (s) => `<u>${s}</u>`, heading: (s) => `<h>${s}</h>` };
+
+test('mdRender: bold/italic/code markers strip under identity style', () => {
+  assert.equal(mdRender('a **b** c _d_ `e`'), 'a b c d e');
+});
+
+test('mdRender: decorators applied for bold, code, and links', () => {
+  assert.equal(mdRender('see **x** and `y` and [z](http://q)', MD), 'see <b>x</b> and <c>y</c> and <a:http://q>z</a>');
+});
+
+test('mdRender: a number in prose is NOT mistaken for a code-span placeholder', () => {
+  assert.equal(mdRender('I have 3 cats and `code`', MD), 'I have 3 cats and <c>code</c>');
+});
+
+test('mdRender: bullets and headings', () => {
+  assert.equal(mdRender('- item', MD), '<u>•</u> item');
+  assert.equal(mdRender('## Title', MD), '<h>Title</h>');
+});
+
+test('mdRender: fenced code is left untouched (no bold inside code)', () => {
+  const t = 'before **b**\n```\nx = **not bold**\n```\nafter';
+  assert.equal(mdRender(t, MD), 'before <b>b</b>\n```\nx = **not bold**\n```\nafter');
 });
