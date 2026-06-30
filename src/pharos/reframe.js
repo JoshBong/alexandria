@@ -33,22 +33,37 @@ function askClaude(system, user) {
   }
 }
 
+// Reframing is for TASKS — it gives the Keeper cleaner instructions. A terse line
+// (greeting, casual remark, gibberish) is not a task: reframing it wastes a call and
+// risks distorting what the user actually said. Gate on a word floor so those skip
+// the runner entirely.
+const TASK_FLOOR = 4; // words; below this, pass the message straight through
+
 // Returns an async composer with the SAME shape as composeTurn (so it slots into
-// the opts.compose seam): ({ prompt, recalled, alias }) -> string.
+// the opts.compose seam): ({ prompt, recalled, alias }) -> string. KEY RULE: it
+// AUGMENTS, never replaces — the Keeper always receives (and answers) the user's
+// original words; a reframe is attached as guidance, never substituted for them.
 export function makeReframeComposer({ run = askClaude } = {}) {
   return async ({ prompt, recalled = [], alias = '' } = {}) => {
+    const words = String(prompt || '').trim().split(/\s+/).filter(Boolean);
+    if (words.length < TASK_FLOOR) return prompt; // not a task → untouched, no call
+
     const ctx = recalled.length
       ? 'Relevant memory (may help resolve shorthand — do not treat as fact):\n' +
         recalled.map((r) => `- ${(r.text || '').split('\n')[0].slice(0, 200)}`).join('\n') +
         '\n\n'
       : '';
     const system =
-      `You are the ${alias || 'specialist'} Keeper of Alexandria. Rewrite the user's request ` +
-      `into ONE clear, self-contained question you will then answer. Resolve pronouns and ` +
-      `shorthand using the context if present, keep the user's intent and scope exactly, ` +
-      `add no new facts or assumptions, and output ONLY the rewritten question.`;
-    const out = await run(system, `${ctx}User request: ${prompt}`);
-    return out && out.trim() ? out.trim() : prompt; // fail-soft: original prompt
+      `You are the ${alias || 'specialist'} Keeper of Alexandria. If the user's message is a ` +
+      `task or request, restate it as ONE clear, self-contained instruction — resolve pronouns ` +
+      `and shorthand using the context if present, keep their intent and scope exactly, add no ` +
+      `new facts or assumptions. If it is NOT a task (a greeting, casual remark, or gibberish), ` +
+      `reply with exactly: SKIP. Output only the restated task, or SKIP.`;
+    const out = (await run(system, `${ctx}User message: ${prompt}`) || '').trim();
+    // Fail-soft + gate: empty, an explicit SKIP, or an echo of the prompt → send the user's
+    // words untouched. Otherwise AUGMENT: original message first, reframe attached as guidance.
+    if (!out || out === 'SKIP' || out === prompt.trim()) return prompt;
+    return `${prompt}\n\n[Clarified task: ${out}]`;
   };
 }
 

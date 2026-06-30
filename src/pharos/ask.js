@@ -8,13 +8,15 @@
 
 import { spawn } from 'node:child_process';
 
-export function askOnce(prompt, { model } = {}) {
+export function askOnce(prompt, { model, system } = {}) {
   return new Promise((resolve) => {
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
     env.ALEXANDRIA_BOAT = '1'; // suppress the operator's ark hooks inside the boat
-    const args = ['-p', ...(model ? ['--model', model] : []), '--setting-sources', 'local', '--output-format', 'json', prompt];
+    // `system` is the optional Keeper persona/instruction for reframe & revoice (passed
+    // as a second arg by those seams). Without it this stays the plain routing call.
+    const args = ['-p', ...(model ? ['--model', model] : []), ...(system ? ['--append-system-prompt', system] : []), '--setting-sources', 'local', '--output-format', 'json', prompt];
     let child;
     try {
       child = spawn('claude', args, { env, stdio: ['ignore', 'pipe', 'ignore'] });

@@ -67,7 +67,11 @@ export async function handle(prompt, opts = {}) {
   // one-shot runner; we bind it to this Keeper's model (its override, else the global
   // model setting, else the CLI default). Routing itself stays on the cheap model.
   const keeperModel = modelOf(routed) || cfg.model || undefined;
-  const keeperAsk = opts.ask ? (q, o = {}) => opts.ask(q, { model: keeperModel, ...o }) : opts.ask;
+  // reframe/revoice call their runner as run(system, user) — two positional strings. Bridge
+  // that to opts.ask's (prompt, { model, system }) shape: the USER message is the prompt,
+  // the persona/instruction is the system. (Getting this backwards silently dropped the
+  // user's message and sent the system prompt as the question — the "no question attached" bug.)
+  const keeperAsk = opts.ask ? (system, user) => opts.ask(user, { model: keeperModel, system }) : opts.ask;
 
   // The turn gets composed (it isn't just the raw prompt): the composer frames the request
   // and attaches recalled context. Injectable via opts.compose so an LLM-backed writer can

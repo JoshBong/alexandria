@@ -54,20 +54,35 @@ test('every Keeper declares a tools allowlist; only Ptah carries real tools', ()
 });
 
 // ---- reframe composer ----
-test('reframe: rewrites via the runner, weaving recall', async () => {
+test('reframe: augments a task with the runner, weaving recall (original preserved)', async () => {
   let seenUser = '';
   const run = async (_sys, user) => { seenUser = user; return 'CLEAN QUESTION'; };
   const compose = makeReframeComposer({ run });
-  const out = await compose({ prompt: 'wrap it', recalled: [{ text: 'the linear algebra pset' }], alias: 'classwork' });
-  assert.equal(out, 'CLEAN QUESTION');
+  const out = await compose({ prompt: 'wrap up the linear algebra pset', recalled: [{ text: 'the linear algebra pset' }], alias: 'classwork' });
+  assert.match(out, /wrap up the linear algebra pset/); // the user's words always go through
+  assert.match(out, /Clarified task: CLEAN QUESTION/);  // reframe attached, NOT substituted
   assert.match(seenUser, /linear algebra pset/); // recall reached the runner
-  assert.match(seenUser, /wrap it/);
+  assert.match(seenUser, /wrap up the linear algebra pset/);
 });
 
-test('reframe: fail-soft — runner returns null → original prompt', async () => {
+test('reframe: short/casual message skips the runner entirely (no call spawned)', async () => {
+  let called = false;
+  const compose = makeReframeComposer({ run: async () => { called = true; return 'X'; } });
+  const out = await compose({ prompt: 'hey there', recalled: [], alias: 'code' });
+  assert.equal(out, 'hey there'); // untouched
+  assert.equal(called, false);    // below the task floor → no wasted reframe call
+});
+
+test('reframe: runner replies SKIP (not a task) → original untouched', async () => {
+  const compose = makeReframeComposer({ run: async () => 'SKIP' });
+  const out = await compose({ prompt: 'lol what is even going on', recalled: [], alias: 'code' });
+  assert.equal(out, 'lol what is even going on');
+});
+
+test('reframe: fail-soft — runner returns null → original task untouched', async () => {
   const compose = makeReframeComposer({ run: async () => null });
-  const out = await compose({ prompt: 'original', recalled: [], alias: 'code' });
-  assert.equal(out, 'original');
+  const out = await compose({ prompt: 'refactor the scoring function please', recalled: [], alias: 'code' });
+  assert.equal(out, 'refactor the scoring function please');
 });
 
 // ---- revoice ----
@@ -82,16 +97,33 @@ test('revoice: fail-soft — runner null → original answer; empty stays empty'
 });
 
 // ---- Pharos integration ----
-test('pharos: reframe ON rewrites the prompt sent to the Keeper', async () => {
+test('pharos: reframe ON augments the prompt sent to the Keeper (original preserved)', async () => {
   let sentToKeeper = '';
   const runTurn = (_id, p) => { sentToKeeper = p; return { text: 'ok', sessionId: 's', fresh: true }; };
-  await handle('wrap the pset', {
+  await handle('wrap up the linear algebra pset', {
     mock: true, reg: freshReg(), persist: false, store: emptyStore,
     settings: { reframe: true, revoice: false, skipPerms: true },
     ask: async () => 'REFRAMED QUESTION',
     runTurn,
   });
-  assert.equal(sentToKeeper, 'REFRAMED QUESTION');
+  assert.match(sentToKeeper, /wrap up the linear algebra pset/); // user's words reach the Keeper
+  assert.match(sentToKeeper, /Clarified task: REFRAMED QUESTION/);
+});
+
+// Regression for the "no question attached" bug: handle() must hand the runner the USER
+// message as its prompt and the persona as system — not the reverse. The old keeperAsk
+// called opts.ask(systemPrompt, …), silently dropping the user's words.
+test('pharos: reframe runner receives the USER message as prompt, persona as system', async () => {
+  let askedPrompt = null; let askedSystem = null;
+  const runTurn = () => ({ text: 'ok', sessionId: 's', fresh: true });
+  await handle('please refactor the scoring function', {
+    mock: true, reg: freshReg(), persist: false, store: emptyStore,
+    settings: { reframe: true, revoice: false, skipPerms: true },
+    ask: async (prompt, opts = {}) => { askedPrompt = prompt; askedSystem = opts.system; return 'REFRAMED'; },
+    runTurn,
+  });
+  assert.match(askedPrompt, /refactor the scoring function/); // the real message, not the system text
+  assert.match(askedSystem || '', /Keeper/);                  // persona delivered via opts.system
 });
 
 test('pharos: revoice ON rewrites the returned answer; OFF passes it straight through', async () => {
