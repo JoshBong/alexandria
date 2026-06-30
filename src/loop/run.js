@@ -23,6 +23,7 @@ import { plan as planFn, replan as replanFn } from './plan.js';
 import { makeElaborator } from './elaborate.js';
 import { runStep } from './step.js';
 import { detectDrift } from './drift.js';
+import { reviewStep } from './review.js';
 import {
   nextReady,
   doneConditionHolds,
@@ -114,7 +115,17 @@ export async function runLoop(goal, opts = {}) {
       // Mark + lock at the boundary (the only place the plan mutates for a step).
       step.attempts = outcome.attempts;
       if (outcome.status === 'done') {
-        lockStep(plan, step.id); // done → locked prefix grows
+        // A done step does not self-ratify (g4): an independent reviewer gates the lock.
+        // No reviewer wired → approves (P0 no-op). Reject → park, surfacing the notes,
+        // rather than rework-on-reject (a bounded later behavior, noted in docs).
+        const verdict = await reviewStep(step, outcome.result, opts);
+        logLoop({ event: 'review', id: step.id, reviewer: verdict.reviewer, approved: verdict.approved }, ctx);
+        if (verdict.approved) {
+          lockStep(plan, step.id); // done + reviewed → locked prefix grows
+        } else {
+          step.status = 'parked';
+          step.reviewReason = verdict.notes || 'independent review rejected';
+        }
       } else {
         step.status = 'parked'; // parked counts as progress (a hard step, not a spin)
       }
