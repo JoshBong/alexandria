@@ -136,8 +136,14 @@ while (true):
   if (!step):                            // nothing ready
      if (doneConditionHolds(plan)) exit SUCCESS
      if (allRemainingBlocked(plan))  exit STUCK
-  result = runStep(step)                 // do → verify → adjust (attempt budget)
-  markStep(step, result)                 // done | parked  → save plan (lock if done)
+  result = runStep(step)                 // do → verify → adjust (attempt budget + plateau, g1)
+  if (result.done):
+     verdict = reviewStep(step, result)   // independent reviewer gates the lock (g4)
+     if (verdict.approved) lockStep()     // done + reviewed → locked prefix grows
+     else park(step, verdict.notes)       // producer never self-ratifies
+  else park(step)
+  emitDrift(plan, result)                 // typed goal-drift alerts at the boundary (g2)
+  if (opts.selfwrite) selfWrite(snapshot) // forked review authors/patches skills (g5)
 
   // ---- BOUNDARY ----
   if (freshnessLow())                     // contextTokens / canary signal from handle()
@@ -190,6 +196,30 @@ step runner is domain-agnostic; it calls `keeper.verify`.
   right Keeper per step.
 - **P4 — async injection UX.** Non-blocking stdin in `bin/pharos.js` (today input is
   paused during a turn) → writes to `inbox.jsonl` while a loop runs.
+
+## 12. Grafted mechanisms (hermes-agent + claude-code-harness)
+
+Built **on top of** the canary + prewarmed warm Keepers — never replacing them (both
+rival harnesses lack a canary; that's the moat). Each is a pure/injectable module proven
+offline (no `claude` spawn in tests); live wiring rides the same P1–P4 seams.
+
+| # | Module | What it adds | Seam | Source |
+|---|--------|--------------|------|--------|
+| g1 | `loop/plateau.js` | Jaccard over the targets each retry touches; sustained overlap parks a *thrashing* step early — a second kill-switch beside the attempt budget | wired in `step.js` (`reason:'plateau'`) | harness `detect-review-plateau.sh` |
+| g2 | `loop/drift.js` | Five typed **goal-drift** alerts (scope-creep / time-overrun / repeated-failure / cost / high-risk-path) — complements the canary's *quality*-drift | emitted at the boundary in `run.js` | harness `progress-detect-drift.sh` |
+| g3 | `loop/contract.js` | Freeze each step into `{ definition_of_done, checks[], max_iterations, risk_flags[] }` at plan time; completion is checked against the frozen contract, not free text | `plan.js` compiles, `step.js` verifies | harness `sprint_contract.go` |
+| g4 | `loop/review.js` | A **different** warm Keeper gives an independent read-only verdict before a done step locks — the producer never self-ratifies | `opts.review` gate in `run.js` | harness `reviewer.md` |
+| g5 | `loop/selfwrite.js` | A **forked** review authors/patches reusable *skills* through a memory+skill store ONLY — never the live plan. Three anti-poisoning rules enforced on output: no transient/env-specific claims, class-level naming, patch-before-create | `opts.selfwrite` at the boundary in `run.js` | hermes `background_review.py` |
+| g6 | `memory/curator.js` | Usage telemetry → active→stale→archived skill lifecycle (archive, never delete) — self-writing without self-pruning drowns | pure (consumed by the skill store) | hermes `curator.py` |
+
+Anti-poisoning (g5) is enforced on the fork's **output**, not by trusting its prompt: a
+candidate skill whose name or body trips a poison pattern (a `/Users/...` path, an IP, "is
+broken", "permission denied", "failed") is dropped with a logged reason. The fork is
+whitelisted structurally — `selfWrite` is handed only the skills store and a read-only
+snapshot, so it *cannot* reach the plan or transcript.
+
+g7 (per-attempt worktree isolation) is **deferred to P2+** — it needs live code-writing
+Keepers to be worth the git overhead.
 
 ## 11. Open decisions
 

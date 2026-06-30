@@ -24,6 +24,7 @@ import { makeElaborator } from './elaborate.js';
 import { runStep } from './step.js';
 import { detectDrift } from './drift.js';
 import { reviewStep } from './review.js';
+import { selfWrite } from './selfwrite.js';
 import {
   nextReady,
   doneConditionHolds,
@@ -145,6 +146,16 @@ export async function runLoop(goal, opts = {}) {
         riskPaths: opts.riskPaths,
       }, opts);
       if (drift.length) logLoop({ event: 'drift', alerts: drift }, ctx);
+
+      // Self-writing review (g5): a forked reflection authors/patches reusable skills
+      // from what just happened — through the skills store ONLY, never the live plan.
+      // Distinct seam from the planner's opts.ask; no fork wired → no-op. Live forking
+      // off a warm Keeper depends on P2.
+      if (opts.selfwrite) {
+        const snapshot = { goal: plan.goal, lastStep: { id: step.id, intent: step.intent, status: step.status } };
+        const sw = await selfWrite(snapshot, { ask: opts.selfwrite, skills: opts.skills });
+        if (sw.ran) logLoop({ event: 'selfwrite', applied: sw.applied, skipped: sw.skipped }, ctx);
+      }
     } else {
       // A boundary with no step ran is a non-progress boundary — the watchdog ticks.
       state.boundariesSinceProgress += 1;
