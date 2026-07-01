@@ -107,6 +107,10 @@ export async function runTurn(keeperId, prompt, { mock = false, reg, settings } 
   if (mock) {
     if (fresh) reg.sessions[keeperId] = { sessionId: `mock-${keeperId}`, started: true };
     const verb = fresh ? 'NEW session' : 'resume';
+    // Optional artificial think-time so the spinner/queue UI can be exercised offline
+    // (ALEXANDRIA_MOCK_DELAY ms). Default 0 — a no-op in normal mock runs and production.
+    const delay = Number(process.env.ALEXANDRIA_MOCK_DELAY) || 0;
+    if (delay > 0) await new Promise((res) => setTimeout(res, delay));
     return { text: `    [${keeperId}/${keeper.alias}] (mock ${verb}) → "${prompt}"`, sessionId: reg.sessions[keeperId].sessionId, fresh };
   }
 

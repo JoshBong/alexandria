@@ -583,6 +583,8 @@ async function startBox() {
   let boxH = 3; // dynamic: 1 top rule + N wrapped input rows + 1 bottom border
   let lastBoxTop = null; // the box's last drawn top row + height — so a resize can wipe the
   let lastBoxH = boxH; //   old footprint instead of stranding a stale border mid-screen
+  let lastContentBottom = null; // last transcript bottom — so a change in reserved rows (spinner /
+  //                               pending queue) repaints instead of stranding old reserved rows
   let L = layout(out0.rows, boxH);
   const cols = () => out0.columns || 80;
   const w = (s) => out0.write(s);
@@ -608,6 +610,11 @@ async function startBox() {
   // pendingExit}); onKey is now a thin I/O shell that runs the reducer and applies its action.
   let edit = initInput();
   const kittyKeys = TTY && cfg.kittyKeys !== false; // kitty keyboard protocol → real Shift+Enter
+  // The turn queue: submitted prompts answered one-at-a-time. Each item is { echo, raw, text }
+  // — echo (coloured transcript line, printed right before ITS answer so echo/answer interleave),
+  // raw (plain text for the pending indicator), text (paste-expanded, sent to the Keeper). Items
+  // still waiting here are shown as pending rows UNDER the thinking line (drawPending).
+  const queue = [];
   // Bracketed-paste capture: a multi-line paste is stashed whole and shown as a compact
   // `[Pasted text #N +L lines]` token in the box (the box is a single char-wrapping line —
   // it can't render the newlines), then expanded back to the full text on submit.
@@ -679,30 +686,45 @@ async function startBox() {
   // a very short window) still draws from an on-screen row (leaving at least row 1 for the
   // transcript) instead of at a non-positive absolute row (which corrupts the draw).
   const boxTopRow = () => Math.max(regionTop + 1, out0.rows - boxH + 1);
-  const contentBottom = () => Math.max(1, boxTopRow() - 1 - (spinning ? 1 : 0)); // last scrolling row
-  const spinnerRow = () => boxTopRow() - 1;
+  // Rows carved out between the transcript and the box, top→bottom: the spinner (1 row while
+  // thinking) then the pending queue (one row per prompt still waiting). So the layout is
+  // [transcript] [⠿ thinking] [⟡ queued…] [box] — queued prompts sit UNDER the verb line.
+  const pendCount = () => queue.length;
+  const contentBottom = () => Math.max(1, boxTopRow() - 1 - (spinning ? 1 : 0) - pendCount()); // last scrolling row
+  const spinnerRow = () => boxTopRow() - 1 - pendCount(); // just above the pending block
   const setRegion = () => w(`\x1b[${regionTop};${contentBottom()}r`);
   const placeCursor = () => { const m = measure(); w(`\x1b[${boxTopRow() + 1 + m.cursorRow};${m.cursorCol + 1}H`); };
+  // The pending-queue rows: one dim `⟡ … · queued` line per prompt still waiting, drawn just
+  // above the box (below the spinner) so a prompt typed while a Keeper is busy shows it's queued.
+  const drawPending = () => {
+    const base = boxTopRow() - pendCount(); // first pending row
+    queue.forEach((it, i) => {
+      const flat = (it.raw || '').replace(/\s*\n\s*/g, ' ');
+      const cap = Math.max(8, W() - 12);
+      const shown = [...flat].length > cap ? `${[...flat].slice(0, cap - 1).join('')}…` : flat;
+      w(`\x1b[${base + i};1H\x1b[2K  ${C.gray}⟡ ${shown} ${C.dim}· queued${C.reset}`);
+    });
+  };
 
   const drawBox = () => {
     sync();
     const top = boxTopRow();
-    // The box changed height (a multi-line input grew it, a delete/submit shrank it back) →
-    // the rows it used to occupy that now sit ABOVE the new box are stale. Wipe the old
-    // footprint and repaint the transcript so old top-rules / input lines don't strand above
-    // the box. (onResize does the same wipe on a terminal resize; this is the type-driven case
-    // that was leaving the `────` ladder Josh saw.)
-    if (lastBoxTop != null && (top !== lastBoxTop || boxH !== lastBoxH)) {
-      for (let k = -1; k <= lastBoxH; k += 1) {
-        const r = lastBoxTop + k;
-        if (r >= regionTop && r <= out0.rows) w(`\x1b[${r};1H\x1b[2K`);
-      }
+    const cb = contentBottom();
+    // The pinned zone changed shape — the box grew/shrank (multi-line, menu) OR the reserved
+    // band did (spinner appeared/left, a queued prompt was added/answered). Rows that were box
+    // or spinner/pending and now aren't are stale; wipe the whole old band and repaint the
+    // transcript so nothing strands above the box (the `────` ladder / leftover `· queued` row).
+    if (lastBoxTop != null && (top !== lastBoxTop || boxH !== lastBoxH || cb !== lastContentBottom)) {
+      const from = Math.min(lastBoxTop, top) - 1;
+      const to = Math.max(lastBoxTop + lastBoxH, top + boxH);
+      for (let r = Math.max(regionTop, from); r <= Math.min(out0.rows, to); r += 1) w(`\x1b[${r};1H\x1b[2K`);
       setRegion();
-      paintTranscript(); // refill the freed rows from history (clears each row as it writes)
+      paintTranscript(); // refill the freed rows from history, bottom-aligned
     }
-    setRegion(); // region matched to box height (+ spinner row when thinking)
-    lastBoxTop = top; lastBoxH = boxH; // remember this footprint so a resize can wipe it
+    setRegion(); // region matched to box height (+ spinner / pending rows)
+    lastBoxTop = top; lastBoxH = boxH; lastContentBottom = cb; // remember this footprint
     drawNav(); // the pinned roster navbar on row 1
+    drawPending(); // queued prompts under the spinner
     w(`\x1b[${top};1H\x1b[2K${bar()}`);
     if (menu) {
       const ls = menuLines(menu, menuView);
@@ -732,10 +754,15 @@ async function startBox() {
   // Absolute-addressed, so it overlays the natural-scroll output cleanly while paging.
   const paintTranscript = () => {
     const rows = regionRows();
-    const start = Math.max(0, history.length - rows - scrollOff);
-    for (let i = 0; i < rows; i += 1) {
-      w(`\x1b[${regionTop + i};1H\x1b[2K${history[start + i] ?? ''}`);
-    }
+    const bottom = contentBottom();
+    // BOTTOM-align, matching out()'s natural-scroll model: sparse history sits at the bottom of
+    // the region with blank rows above (top-aligning would jump the transcript to the top and
+    // leave a gap under it). `scrollOff` pages the visible window back through history.
+    const end = history.length - scrollOff;
+    const visible = history.slice(Math.max(0, end - rows), end);
+    const startRow = bottom - visible.length + 1;
+    for (let r = regionTop; r <= bottom; r += 1) w(`\x1b[${r};1H\x1b[2K`); // clear the region
+    visible.forEach((ln, i) => w(`\x1b[${startRow + i};1H${ln ?? ''}`));
   };
   const renderScroll = () => { paintTranscript(); drawBox(); }; // transcript + box/cursor back on top
 
@@ -814,7 +841,6 @@ async function startBox() {
   };
 
   // ---- the queue: submitted lines answered one-at-a-time, never overlapping ----
-  const queue = [];
   let processing = false;
   let closing = false;
   let resolveLoop;
@@ -825,22 +851,27 @@ async function startBox() {
     if (processing) return;
     processing = true;
     while (queue.length && !closing) {
-      const keep = await handleLine(queue.shift());
+      const item = queue.shift(); // remove from the pending block first…
+      if (item.echo) out(item.echo); // …then echo it into the transcript, right before ITS answer
+      const keep = await handleLine(item.text);
       if (keep === false) { finish(); break; }
     }
     processing = false;
+    drawBox();
   }
 
-  // Enter → the line leaves the box at once (echoed into the transcript) and joins the
-  // queue; the box clears so you can immediately type the next one.
+  // Enter → the line leaves the box and joins the queue; the box clears so you can type the
+  // next one. The echo is DEFERRED to drain (printed right before the prompt's own answer) so
+  // echoes/answers interleave; a prompt queued behind a running turn shows as a pending row.
   const submit = (line) => {
     drawBox(); // the reducer already cleared edit.buf — repaint the now-empty box
     const expanded = expandPastes(line || '').trim(); // full text (pastes restored) for the Keeper
     pastes.clear(); pasteCount = 0; // the line left the box — its pastes are consumed
-    const p = (line || '').trim();
-    if (p) out(`  ${C.deep}⟡${C.reset} ${C.sand}${p.replace(/\n/g, '\n    ')}${C.reset}`); // echo (continuation lines indent under the marker)
     if (!expanded) return;
-    queue.push(expanded);
+    const raw = (line || '').trim();
+    const echo = raw ? `  ${C.deep}⟡${C.reset} ${C.sand}${raw.replace(/\n/g, '\n    ')}${C.reset}` : '';
+    queue.push({ echo, raw, text: expanded });
+    if (processing) drawBox(); // a turn is already running → show this one as pending under the spinner
     drain();
   };
 
