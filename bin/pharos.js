@@ -637,40 +637,39 @@ async function startBox() {
   // otherwise the (wrapped) input line.
   const sync = () => { boxH = (menu ? menuLines(menu, menuView).length : measure().rows.length) + 2; L = layout(out0.rows, boxH); };
 
-  // The persistent roster: every active Keeper with ITS OWN session load (each Keeper is a
-  // separate `claude` session, so there's no single global figure), the one that just
-  // answered bold+white and the rest grey. A `↺` after a load means that session was fresh/
-  // reseeded this turn — so a drop reads as "flushed", not a broken meter. The window
-  // (denominator) is shown once at the end.
   const fmtK = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`);
-  const hudStat = () => {
-    const roster = KEEPERS.filter((k) => k.active).map((k) => {
-      const name = k.id[0].toUpperCase() + k.id.slice(1);
-      const rec = ctxById.get(k.id.toLowerCase());
-      const load = rec ? ` ${fmtK(rec.ctx)}${rec.reseed ? '↺' : ''}` : '';
-      const body = `${name}${load}`;
-      return activeId && k.id.toLowerCase() === activeId.toLowerCase()
-        ? `${C.b}${C.white}${body}${C.reset}`
-        : `${C.gray}${body}${C.reset}`;
-    }).join(' ');
-    // The full window meter for the active Keeper (the form you liked: ctx 34k/200k (17%)),
-    // shown once at the end after the per-Keeper roster.
+  // The roster — just the Keeper NAMES (the one that just answered bold+white, the rest grey).
+  // Per-Keeper load numbers are gone: the active Keeper's load lives in the ctx meter below, so
+  // repeating it here was redundant. Lives on the TOP navbar (drawNav).
+  const rosterBar = () => KEEPERS.filter((k) => k.active).map((k) => {
+    const name = k.id[0].toUpperCase() + k.id.slice(1);
+    return activeId && k.id.toLowerCase() === activeId.toLowerCase()
+      ? `${C.b}${C.white}${name}${C.reset}`
+      : `${C.gray}${name}${C.reset}`;
+  }).join(' ');
+  // The context meter for the active Keeper — ctx used/window (pct); `↺` = the session was
+  // reseeded/flushed this turn (so a drop reads as "flushed", not a broken meter). Lives on the
+  // BOTTOM border where Josh wants it.
+  const ctxMeter = () => {
     const rec = activeId ? ctxById.get(activeId.toLowerCase()) : null;
     if (rec && winTok) {
       const pct = Math.round((rec.ctx / winTok) * 100);
-      return `${roster} ${C.dim}· ctx ${fmtK(rec.ctx)}/${fmtK(winTok)} (${pct}%)${C.reset}`;
+      return `${C.dim}ctx ${fmtK(rec.ctx)}/${fmtK(winTok)} (${pct}%)${rec.reseed ? ' ↺' : ''}${C.reset}`;
     }
-    return winTok ? `${roster} ${C.dim}· /${fmtK(winTok)}${C.reset}` : roster;
+    return winTok ? `${C.dim}/${fmtK(winTok)}${C.reset}` : '';
   };
-  // The pinned roster navbar (row 1, outside the scroll region) — the Keepers + ctx meter,
-  // active one bold+white, always visible at the TOP while the transcript scrolls beneath.
-  const drawNav = () => {
-    const stat = hudStat();
+  // A rule with a right-hand stat: `  ──────  <stat>  ─`. Used for both the top navbar and the
+  // bottom border (a bare rule when the stat is empty).
+  const statRule = (stat) => {
+    if (!stat) return `  ${C.bronze}${rule()}${C.reset}`;
     const rail = Math.max(2, W() - visLen(stat) - 3);
-    w(`\x1b[1;1H\x1b[2K  ${C.bronze}${'─'.repeat(rail)}${C.reset} ${stat} ${C.bronze}─${C.reset}`);
+    return `  ${C.bronze}${'─'.repeat(rail)}${C.reset} ${stat} ${C.bronze}─${C.reset}`;
   };
-  // The box's bottom border is now a plain rule — the roster moved up to the navbar.
-  const botBorder = () => `  ${C.bronze}${rule()}${C.reset}`;
+  // The pinned roster navbar (row 1, outside the scroll region) — Keeper NAMES only, always
+  // visible at the TOP while the transcript scrolls beneath.
+  const drawNav = () => w(`\x1b[1;1H\x1b[2K${statRule(rosterBar())}`);
+  // The box's bottom border carries the ctx meter.
+  const botBorder = () => statRule(ctxMeter());
 
   // The box is PINNED at the bottom. The transcript scrolls in a region ABOVE it, and
   // when a Keeper is thinking one extra row above the box is reserved for the spinner and
