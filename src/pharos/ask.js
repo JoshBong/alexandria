@@ -8,7 +8,7 @@
 
 import { spawn } from 'node:child_process';
 
-export function askOnce(prompt, { model, system } = {}) {
+export function askOnce(prompt, { model, system, tools, skipPerms } = {}) {
   return new Promise((resolve) => {
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY;
@@ -16,7 +16,15 @@ export function askOnce(prompt, { model, system } = {}) {
     env.ALEXANDRIA_BOAT = '1'; // suppress the operator's ark hooks inside the boat
     // `system` is the optional Keeper persona/instruction for reframe & revoice (passed
     // as a second arg by those seams). Without it this stays the plain routing call.
-    const args = ['-p', ...(model ? ['--model', model] : []), ...(system ? ['--append-system-prompt', system] : []), '--setting-sources', 'local', '--output-format', 'json', prompt];
+    // `tools` (+ `skipPerms`) let a caller grant this one-shot real capability — the
+    // research fan-out workers pass `WebSearch,WebFetch` so they can actually search;
+    // skipPerms mirrors a boat so a headless call never hangs on a permission prompt.
+    const args = ['-p',
+      ...(model ? ['--model', model] : []),
+      ...(system ? ['--append-system-prompt', system] : []),
+      ...(tools ? ['--tools', tools] : []),
+      ...(skipPerms ? ['--dangerously-skip-permissions'] : []),
+      '--setting-sources', 'local', '--output-format', 'json', prompt];
     let child;
     try {
       child = spawn('claude', args, { env, stdio: ['ignore', 'pipe', 'ignore'] });

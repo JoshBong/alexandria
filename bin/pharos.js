@@ -117,6 +117,7 @@ const { KEEPERS, applyProfile } = await import('../src/pharos/keepers.js');
 const { loadOverrides, saveOverride } = await import('../src/pharos/overrides.js');
 const { tokenLimit, contextWindow } = await import('../src/pharos/tokens.js');
 const { askOnce } = await import('../src/pharos/ask.js');
+const { research, MODES } = await import('../src/research/fanout.js');
 
 // Pharos's routing call runs on the cheapest model — it's a one-word domain
 // decision, no reason to spend a big model on it. Live only; mock stays offline.
@@ -429,6 +430,7 @@ function doReset() {
 }
 
 const COMMANDS = [
+  ['/research', 'fan-out research (--idea for a startup verdict, --broad default)'],
   ['/settings', 'view & toggle settings'],
   ['/name', 'change what your Keepers call you'],
   ['/metrics', 'toggle the per-turn token + timing line'],
@@ -441,6 +443,66 @@ function printHelp() {
   console.log(`  ${C.b}${C.gold}Commands${C.reset}`);
   for (const [c, d] of COMMANDS) console.log(`    ${C.gold}${c.padEnd(10)}${C.reset} ${C.dim}${d}${C.reset}`);
   console.log(`  ${C.dim}anything else is a question — Pharos routes it to the right Keeper.${C.reset}\n`);
+}
+
+// Render a markdown string to the terminal the SAME way a Keeper answer is rendered
+// (ANSI inline md + collapsed code + left gutter); plain/verbatim off-TTY. Reused by the
+// answer path and /research so their output looks identical.
+function renderMarkdown(text) {
+  const body = TTY
+    ? collapseCode(mdRender(text, {
+      bold: (s) => `${C.b}${s}${C.reset}`,
+      italic: (s) => `\x1b[3m${s}\x1b[23m`,
+      code: (s) => `${C.bronze}${s}${C.reset}`,
+      link: (t, u) => `${C.b}${t}${C.reset} ${C.dim}${u}${C.reset}`,
+      bullet: (s) => `${C.gold}${s}${C.reset}`,
+      heading: (s) => `${C.b}${C.gold}${s}${C.reset}`,
+    }), { style: { summary: (s) => `${C.dim}${C.bronze}${s}${C.reset}` } })
+    : text;
+  console.log(body.split('\n').map((l) => `  ${l}`).join('\n'));
+}
+
+// /research <question> [--idea|--broad] [--angles N] — the fan-out research pipeline.
+// Decompose → N parallel web-research workers → synthesis. Mode picks the lenses +
+// verdict style: --broad (default) = cited report, --idea = BUILD/PASS council verdict.
+async function doResearch(rest) {
+  const toks = (rest || '').split(/\s+/).filter(Boolean);
+  let mode = 'broad';
+  let angles;
+  const qWords = [];
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t === '--idea' || t === '--startup') mode = 'idea';
+    else if (t === '--broad') mode = 'broad';
+    else if (t === '--mode') mode = toks[++i] || mode;
+    else if (t === '--angles') angles = Number(toks[++i]) || undefined;
+    else qWords.push(t);
+  }
+  const question = qWords.join(' ').trim();
+  if (!question) {
+    console.log(`  ${C.dim}usage: ${C.gold}/research <question>${C.reset}${C.dim} [${C.reset}--idea${C.dim}|${C.reset}--broad${C.dim}] [${C.reset}--angles N${C.dim}]${C.reset}\n`);
+    return;
+  }
+  if (mock) { console.log(`  ${C.dim}/research needs live Keepers (not available in --mock)${C.reset}\n`); return; }
+
+  const label = (MODES[mode] || MODES.broad).label;
+  const t0 = Date.now();
+  const spin = boxCtl ? boxCtl.spinner(`researching · ${label}`) : thinking(`researching · ${label}`);
+  let out;
+  try {
+    out = await research(question, { mode, angles });
+  } catch (e) {
+    spin.stop();
+    console.log(`  ${C.red}✗ research failed:${C.reset} ${C.dim}${e.message}${C.reset}\n`);
+    return;
+  }
+  spin.stop();
+  const secs = ((Date.now() - t0) / 1000).toFixed(1);
+  const ok = out.findings.filter((f) => !f.error).length;
+  console.log(`  ${C.gold}◆${C.reset} ${C.b}research${C.reset} ${C.dim}(${label})${C.reset} ${C.gray}${ok}/${out.findings.length} angles${C.reset}  ${C.gray}⧖ ${secs}s${C.reset}`);
+  console.log('');
+  renderMarkdown(out.report);
+  console.log('');
 }
 
 function printStatus() {

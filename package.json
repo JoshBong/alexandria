@@ -9,7 +9,8 @@
     "alexandria": "bin/pharos.js",
     "pharos": "bin/pharos.js",
     "alexandria-events": "bin/events.js",
-    "alexandria-loop": "bin/loop.js"
+    "alexandria-loop": "bin/loop.js",
+    "alexandria-research": "bin/research.js"
   },
   "engines": {
     "node": ">=18"
