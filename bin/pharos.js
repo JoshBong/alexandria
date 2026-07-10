@@ -60,16 +60,17 @@ const verbAt = (elapsedMs, seed) => VERBS[(seed + Math.floor(elapsedMs / 7000)) 
 // An animated "thinking" line (braille spinner + elapsed seconds), cleared in place
 // when the answer arrives. No-op on a non-TTY (keeps piped output clean).
 function thinking(label = 'thinking') {
-  if (!TTY) return { stop() {} };
+  if (!TTY) return { stop() {}, set() {} };
   const frames = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
   const t0 = Date.now();
   const seed = Math.floor(Math.random() * VERBS.length);
+  let lbl = label;
   let i = 0;
   const timer = setInterval(() => {
     const el = Date.now() - t0;
-    process.stdout.write(`\r  ${C.gray}${frames[i = (i + 1) % frames.length]}${C.reset} ${C.b}${C.gold}${verbAt(el, seed)}…${C.reset} ${C.dim}(${Math.floor(el / 1000)}s · ${label})${C.reset}\x1b[K`);
+    process.stdout.write(`\r  ${C.gray}${frames[i = (i + 1) % frames.length]}${C.reset} ${C.b}${C.gold}${verbAt(el, seed)}…${C.reset} ${C.dim}(${Math.floor(el / 1000)}s · ${lbl})${C.reset}\x1b[K`);
   }, 80);
-  return { stop() { clearInterval(timer); process.stdout.write('\r\x1b[K'); } };
+  return { stop() { clearInterval(timer); process.stdout.write('\r\x1b[K'); }, set(l) { lbl = l; } };
 }
 
 const ask = (rl, q) => new Promise((res) => rl.question(q, res));
@@ -118,6 +119,7 @@ const { loadOverrides, saveOverride } = await import('../src/pharos/overrides.js
 const { tokenLimit, contextWindow } = await import('../src/pharos/tokens.js');
 const { askOnce } = await import('../src/pharos/ask.js');
 const { research, MODES } = await import('../src/research/fanout.js');
+const { update: selfUpdate, localVersion } = await import('../src/update.js');
 
 // Pharos's routing call runs on the cheapest model — it's a one-word domain
 // decision, no reason to spend a big model on it. Live only; mock stays offline.
@@ -431,6 +433,7 @@ function doReset() {
 
 const COMMANDS = [
   ['/research', 'fan-out research (--idea for a startup verdict, --broad default)'],
+  ['/update', 'update Alexandria from GitHub (new version loads on next launch)'],
   ['/settings', 'view & toggle settings'],
   ['/name', 'change what your Keepers call you'],
   ['/metrics', 'toggle the per-turn token + timing line'],
@@ -488,9 +491,14 @@ async function doResearch(rest) {
   const label = (MODES[mode] || MODES.broad).label;
   const t0 = Date.now();
   const spin = boxCtl ? boxCtl.spinner(`researching · ${label}`) : thinking(`researching · ${label}`);
+  // Walk the spinner label through the stages so a multi-minute run shows where it is.
+  const onStage = (s) => {
+    if (s.stage === 'fanout') spin.set(`researching · ${label} · ${s.count} workers`);
+    else if (s.stage === 'synthesize') spin.set(`researching · ${label} · synthesizing`);
+  };
   let out;
   try {
-    out = await research(question, { mode, angles });
+    out = await research(question, { mode, angles, onStage });
   } catch (e) {
     spin.stop();
     console.log(`  ${C.red}✗ research failed:${C.reset} ${C.dim}${e.message}${C.reset}\n`);
@@ -503,6 +511,17 @@ async function doResearch(rest) {
   console.log('');
   renderMarkdown(out.report);
   console.log('');
+}
+
+// /update [--force] — self-update from GitHub in place. The running process keeps its
+// loaded code; the new version applies on the next `alexandria` launch.
+async function doUpdate(force) {
+  const spin = boxCtl ? boxCtl.spinner('updating') : thinking('updating');
+  const r = await selfUpdate({ force });
+  spin.stop();
+  if (r.status === 'current') console.log(`  ${C.green}✓${C.reset} ${C.dim}already up to date (${r.version})${C.reset}\n`);
+  else if (r.status === 'updated') console.log(`  ${C.green}✓${C.reset} updated ${C.dim}${r.from}${C.reset} → ${C.b}${r.to}${C.reset} ${C.dim}— restart alexandria to load it${C.reset}\n`);
+  else console.log(`  ${C.red}✗ update failed:${C.reset} ${C.dim}${r.reason}${force ? '' : ' — /update --force to reinstall anyway'}${C.reset}\n`);
 }
 
 function printStatus() {
@@ -546,6 +565,8 @@ async function handleLine(line) {
   if (p === '/metrics') { showMetrics = !showMetrics; console.log(`  ${C.dim}metrics ${showMetrics ? `${C.green}on` : 'off'}${C.reset}\n`); return true; }
   if (p === '/status') { printStatus(); return true; }
   if (p === '/help' || p === '/hlp' || p === '/?' || p === '/h') { printHelp(); return true; }
+  if (p === '/research' || p.startsWith('/research ')) { await doResearch(p.slice(9).trim()); return true; }
+  if (p === '/update' || p === '/update --force') { await doUpdate(p.endsWith('--force')); return true; }
   if (p === '/model' || p.startsWith('/model ')) {
     const v = p.slice(6).trim();
     if (v) changeSettings(['model', v]); // takes effect next turn (--model on each boat spawn)
@@ -603,22 +624,10 @@ async function handleLine(line) {
   console.log(`  ${arrow} ${C.b}${r.routed}${C.reset} ${C.dim}(${r.alias})${C.reset} ${C.gray}${note}${r.fresh ? `${note ? ' · ' : ''}new` : ''}${C.reset}${recall}${flush}${early}${meter}`);
   if (showMetrics) printMetrics(r);
   console.log('');
-  // Render inline markdown (bold/italic/code/links/bullets) to ANSI, then collapse long
-  // fenced code blocks — a Keeper answer arrives as raw markdown, so a terminal showed
-  // `**bold**`/`[t](url)` literally and an 80-line block buried the reply. mdRender runs
-  // first (fence-aware, leaves code alone) so collapseCode still sees intact ``` fences.
-  // TTY only; piped/test output stays full & verbatim.
-  const body = TTY
-    ? collapseCode(mdRender(r.text, {
-      bold: (s) => `${C.b}${s}${C.reset}`,
-      italic: (s) => `\x1b[3m${s}\x1b[23m`,
-      code: (s) => `${C.bronze}${s}${C.reset}`,
-      link: (t, u) => `${C.b}${t}${C.reset} ${C.dim}${u}${C.reset}`,
-      bullet: (s) => `${C.gold}${s}${C.reset}`,
-      heading: (s) => `${C.b}${C.gold}${s}${C.reset}`,
-    }), { style: { summary: (s) => `${C.dim}${C.bronze}${s}${C.reset}` } })
-    : r.text;
-  console.log(body.split('\n').map((l) => `  ${l}`).join('\n')); // answer under a soft left gutter
+  // Render the answer identically to /research — ANSI inline md, collapsed fenced code, and
+  // the soft left gutter — via the shared helper. TTY only; piped/test output stays verbatim
+  // (handled inside renderMarkdown). This was a verbatim copy of renderMarkdown's body.
+  renderMarkdown(r.text);
   console.log('');
   // Update the persistent bottom-border HUD: current Keeper + TOTAL context against the
   // real context WINDOW (not the flush trigger — that was the confusing 150k "max").
@@ -855,6 +864,7 @@ async function startBox() {
     const frames = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
     const t0 = Date.now();
     const seed = Math.floor(Math.random() * VERBS.length);
+    let lbl = label;
     let i = 0;
     // The just-submitted line was echoed onto the row that's about to become the spinner
     // row (when idle, contentBottom == spinnerRow). Scroll that row up into the permanent
@@ -869,12 +879,12 @@ async function startBox() {
     drawBox(); // reserve the spinner row (shrinks the scroll region by one)
     const paint = () => {
       const el = Date.now() - t0;
-      w(`\x1b[${spinnerRow()};1H\x1b[2K  ${C.gray}${frames[i = (i + 1) % frames.length]}${C.reset} ${C.b}${C.gold}${verbAt(el, seed)}…${C.reset} ${C.dim}(${Math.floor(el / 1000)}s · ${label})${C.reset}`);
+      w(`\x1b[${spinnerRow()};1H\x1b[2K  ${C.gray}${frames[i = (i + 1) % frames.length]}${C.reset} ${C.b}${C.gold}${verbAt(el, seed)}…${C.reset} ${C.dim}(${Math.floor(el / 1000)}s · ${lbl})${C.reset}`);
       placeCursor();
     };
     paint();
     const timer = setInterval(paint, 80);
-    return { stop() { clearInterval(timer); w(`\x1b[${spinnerRow()};1H\x1b[2K`); spinning = false; drawBox(); } };
+    return { stop() { clearInterval(timer); w(`\x1b[${spinnerRow()};1H\x1b[2K`); spinning = false; drawBox(); }, set(l) { lbl = l; } };
   };
 
   // On resize the box moves to a new bottom-anchored position; its OLD rows aren't part
