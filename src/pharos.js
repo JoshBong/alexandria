@@ -17,6 +17,7 @@ import { isTokenLow } from './pharos/tokens.js';
 import { logEvent, eventsEnabled } from './pharos/events.js';
 import { getSettings } from './pharos/settings.js';
 import { makeReframeComposer, revoiceAnswer } from './pharos/reframe.js';
+import { advise, extractAdviceRequest, advisedPrompt } from './pharos/advisor.js';
 
 const ACTIVE = new Set(KEEPERS.filter((k) => k.active).map((k) => k.id));
 const aliasOf = (id) => (KEEPERS.find((k) => k.id === id) || {}).alias || id;
@@ -117,6 +118,29 @@ export async function handle(prompt, opts = {}) {
   const run = opts.runTurn || runTurn;
   let turn = await run(routed, turnPrompt, { mock, reg, settings: cfg });
 
+  // The escalate-up gate (see pharos/advisor.js). An advisor-enabled Keeper runs on a
+  // cheap driver model and, at a genuinely hard fork, replies with an ADVISE: brief
+  // instead of an answer. Pharos relays the brief to the shared warm opus advisor (pool
+  // of one, lazily spawned into reg.sessions like any Keeper) and hands the verdict back
+  // to the SAME warm Keeper session to finish the turn — the Keeper never flushes or
+  // reseeds around an escalation; that's the whole point vs swapping the Keeper's model.
+  // Hard cap: one escalation per turn (a second ADVISE relays as text, never loops). An
+  // empty verdict (advisor failed) relays the raw reply — a turn never breaks on this.
+  // Runs BEFORE the canary/token gates so those judge the final turn's text and load.
+  let advised = false;
+  const advisorEnabled = (KEEPERS.find((k) => k.id === routed) || {}).advisor;
+  if (cfg.advisor && advisorEnabled && (!mock || opts.advise)) {
+    const brief = extractAdviceRequest(turn.text);
+    if (brief) {
+      const adviseFn = opts.advise || ((b) => advise(b, { alias: aliasOf(routed), reg, settings: cfg, run }));
+      const verdict = await adviseFn(brief);
+      if (verdict) {
+        turn = await run(routed, advisedPrompt(verdict), { mock, reg, settings: cfg });
+        advised = true;
+      }
+    }
+  }
+
   // The canary gate. Late-but-better-than-nothing (Josh): if a warm thread that's
   // ALREADY heavy lost its marker, it's degraded — write a handoff, flush the session,
   // and REDO once on a fresh session reseeded with continuity. Gated on isTokenLow so a
@@ -182,6 +206,7 @@ export async function handle(prompt, opts = {}) {
           output: u.output_tokens ?? null,
         },
         recalled: recalled.length,
+        advised, // escalate-up gate fired (ADVISE brief → advisor verdict → follow-up)
         redone, // canary (LATE) gate fired a redo
         degraded, // still no canary after the redo
         compacting, // token (EARLY) gate flushed for next turn
@@ -200,6 +225,7 @@ export async function handle(prompt, opts = {}) {
     note,
     scores: decision.scores,
     recalled,
+    advised,
     redone,
     degraded,
     compacting,

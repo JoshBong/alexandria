@@ -41,6 +41,12 @@ import path from 'node:path';
 //               supporting terminal (ghostty/kitty/WezTerm/…) this is what makes Shift+Enter
 //               insert a newline. Default ON; the box also accepts a trailing "\" + Enter and
 //               Option+Enter as portable fallbacks, so turning this off loses only Shift+Enter.
+//   advisor   — the escalate-up gate (see pharos/advisor.js): advisor-enabled Keepers
+//               (Ptah, on a cheap driver model) may emit an ADVISE: brief at a hard
+//               fork, which Pharos relays to the shared warm opus advisor and hands
+//               the verdict back to the same warm Keeper session. This is the GLOBAL
+//               kill switch; which Keepers participate is per-Keeper (keepers.js
+//               `advisor` + keepers.local.json override). Default ON.
 export const DEFAULTS = {
   reframe: false,
   revoice: false,
@@ -48,6 +54,7 @@ export const DEFAULTS = {
   prewarm: true,
   metrics: false,
   kittyKeys: true,
+  advisor: true,
 };
 
 // String-valued settings (not booleans) — resolved separately from the bool flags.
@@ -77,6 +84,7 @@ const ENV = {
   prewarm: 'ALEXANDRIA_PREWARM',
   metrics: 'ALEXANDRIA_METRICS',
   kittyKeys: 'ALEXANDRIA_KITTY_KEYS',
+  advisor: 'ALEXANDRIA_ADVISOR',
 };
 
 const STRING_ENV = {

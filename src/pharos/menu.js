@@ -36,6 +36,7 @@ export const SETTINGS_SCHEMA = [
   { key: 'kittyKeys', kind: 'bool' },
   { key: 'contextWindow', kind: 'num' },
   { key: 'mcpConfig', kind: 'str' },
+  { key: 'advisor', kind: 'bool' },
   { key: 'reframe', kind: 'bool' },
   { key: 'revoice', kind: 'bool' },
   { key: 'skipPerms', kind: 'bool' },

@@ -15,10 +15,9 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { KEEPERS } from './keepers.js';
-import { CANARY_INSTRUCTION } from './canary.js';
 import { getSettings } from './settings.js';
 import { loadRegistry, saveRegistry } from './registry.js';
-import { boatExtraArgs, boatCwd } from '../keeper.js';
+import { boatExtraArgs, boatCwd, boatSystemPrompt } from '../keeper.js';
 
 const WARM_PROMPT = 'Session warmup — you are now resident. Reply with exactly: ⟡ ready';
 
@@ -33,7 +32,7 @@ function spawnFresh(keeper, prompt, { settings }) {
     env.ALEXANDRIA_BOAT = '1';
     const sessionId = randomUUID();
     const extra = boatExtraArgs(keeper, settings);
-    const args = ['-p', '--session-id', sessionId, '--append-system-prompt', keeper.persona + CANARY_INSTRUCTION, ...extra, '--output-format', 'json', prompt];
+    const args = ['-p', '--session-id', sessionId, '--append-system-prompt', boatSystemPrompt(keeper), ...extra, '--output-format', 'json', prompt];
     const child = spawn('claude', args, { env, stdio: 'ignore', cwd: boatCwd(keeper) });
     let settled = false;
     const finish = (ok) => { if (settled) return; settled = true; resolve(ok ? sessionId : null); };

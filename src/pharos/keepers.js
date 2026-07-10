@@ -40,6 +40,13 @@ const BASE = [
     // The one acting Keeper: it touches the repo, so it carries real tools and keeps
     // the repo's own CLAUDE.md context (no `clean`).
     tools: 'Read,Edit,Write,Bash,Grep,Glob',
+    // Escalate-up: Ptah runs on a cheap driver model and calls up to the shared opus
+    // advisor only at a hard fork (see pharos/advisor.js). Code is the domain where
+    // hard calls localize into a small self-contained brief — the scopeability the
+    // economics need. Reasoner Keepers whose hard calls need their whole thread
+    // history (Ra) deliberately do NOT enable this.
+    advisor: true,
+    model: 'sonnet',
     persona:
       "You are Ptah, Keeper of the code domain in Alexandria — ${name}'s engineering " +
       'and repository work. Be precise, terminal-first, and concise. When you act on the ' +
@@ -152,6 +159,9 @@ export function buildKeepers({ profile = getProfile(), overrides = loadOverrides
       // Per-Keeper model override wins; '' / absent falls back to the base default
       // (most Keepers have none → keeper.model stays undefined → keeper.js uses cfg.model).
       model: ov.model || k.model,
+      // Per-Keeper escalate-up override (keepers.local.json "advisor": true/false) wins
+      // over the shipped default — so an operator can arm/disarm a domain locally.
+      advisor: typeof ov.advisor === 'boolean' ? ov.advisor : k.advisor,
       persona: identity + about + k.persona.replace(/\$\{name\}/g, name) + (ov.personaContext ? ` ${ov.personaContext.trim()}` : ''),
       terms: { ...k.terms, ...(ov.terms || {}) },
     };
@@ -169,7 +179,7 @@ export const KEEPERS = buildKeepers();
 // session's persona is baked at creation.
 export function applyProfile({ profile = getProfile(), overrides = loadOverrides() } = {}) {
   const next = buildKeepers({ profile, overrides });
-  KEEPERS.forEach((k, i) => { k.persona = next[i].persona; k.terms = next[i].terms; k.model = next[i].model; });
+  KEEPERS.forEach((k, i) => { k.persona = next[i].persona; k.terms = next[i].terms; k.model = next[i].model; k.advisor = next[i].advisor; });
   return KEEPERS;
 }
 

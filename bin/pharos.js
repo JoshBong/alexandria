@@ -235,10 +235,11 @@ function printMetrics(r) {
 // /settings — view and toggle. `/settings` lists; `/settings <key>` flips a bool;
 // `/settings <key> <value>` sets a string (sharedTools/mcpConfig). Writes through to
 // .pharos/settings.json so the next turn's getSettings() picks it up.
-const BOOL_KEYS = ['reframe', 'revoice', 'skipPerms', 'prewarm', 'metrics', 'kittyKeys'];
+const BOOL_KEYS = ['advisor', 'reframe', 'revoice', 'skipPerms', 'prewarm', 'metrics', 'kittyKeys'];
 const STR_KEYS = ['model', 'sharedTools', 'mcpConfig'];
 const NUM_KEYS = ['contextWindow'];
 const SETTING_HELP = {
+  advisor: 'advisor-enabled Keepers escalate hard forks to a warm opus advisor',
   reframe: 'the Keeper rewrites your prompt into a clean question first',
   revoice: 'the Keeper re-voices its own answer into one consistent voice',
   skipPerms: 'boats run headless (skip permission prompts)',
@@ -267,7 +268,10 @@ function printSettings() {
 // Settings baked into a warm session at spawn time. Changing one mid-run has NO effect
 // until the Keepers re-warm — so flush their sessions when one of these changes (same as
 // /name does for the persona), otherwise the setting silently "doesn't work".
-const SPAWN_KEYS = ['model', 'sharedTools', 'mcpConfig', 'skipPerms'];
+// advisor is spawn-baked too: the ADVISE escalation rule is appended to an enabled
+// Keeper's system prompt at session creation, so toggling it must re-warm (otherwise
+// off still escalates / on never does, per whatever the old session was born with).
+const SPAWN_KEYS = ['model', 'sharedTools', 'mcpConfig', 'skipPerms', 'advisor'];
 function flushWarmSessions() {
   const reg = loadRegistry(registryPath);
   reg.sessions = {};
@@ -611,6 +615,7 @@ async function handleLine(line) {
   const NOTE = { llm: 'routed by Pharos', argmax: '', 'sticky-below-floor': 'stayed put', 'sticky-hysteresis': 'stayed put', 'below-floor->intake': 'unclear → intake' };
   const note = NOTE[r.note] !== undefined ? NOTE[r.note] : r.note;
   const recall = r.recalled?.length ? ` ${C.dim}· recalled ${r.recalled.length}${C.reset}` : '';
+  const adv = r.advised ? ` ${C.gold}· ⇡ advised${C.reset}` : '';
   const flush = r.redone ? (r.degraded ? ` ${C.red}· ⚠ degraded${C.reset}` : ` ${C.green}· reseeded${C.reset}`) : '';
   const early = r.compacting ? ` ${C.deep}· ⟳ pre-compacted${C.reset}` : '';
   // Header ABOVE the answer: who answered, how long it took, and the PER-TURN token cost
@@ -621,7 +626,7 @@ async function handleLine(line) {
   const turnTok = r.turnTokens || ((u.input_tokens || 0) + (u.output_tokens || 0));
   const tok = turnTok >= 1000 ? `${(turnTok / 1000).toFixed(1)}k` : `${turnTok}`;
   const meter = `  ${C.gray}⧖ ${secs}s${turnTok ? ` ${C.dim}·${C.gray} ◈ ${tok} tok` : ''}${C.reset}`;
-  console.log(`  ${arrow} ${C.b}${r.routed}${C.reset} ${C.dim}(${r.alias})${C.reset} ${C.gray}${note}${r.fresh ? `${note ? ' · ' : ''}new` : ''}${C.reset}${recall}${flush}${early}${meter}`);
+  console.log(`  ${arrow} ${C.b}${r.routed}${C.reset} ${C.dim}(${r.alias})${C.reset} ${C.gray}${note}${r.fresh ? `${note ? ' · ' : ''}new` : ''}${C.reset}${recall}${adv}${flush}${early}${meter}`);
   if (showMetrics) printMetrics(r);
   console.log('');
   // Render the answer identically to /research — ANSI inline md, collapsed fenced code, and

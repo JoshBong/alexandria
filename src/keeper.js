@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { KEEPERS } from './pharos/keepers.js';
 import { CANARY_INSTRUCTION } from './pharos/canary.js';
+import { ADVISE_INSTRUCTION } from './pharos/advisor.js';
 import { contextTokensOf } from './pharos/tokens.js';
 import { getSettings } from './pharos/settings.js';
 
@@ -99,8 +100,17 @@ export function parseStreamJson(stdout) {
 // froze the whole event loop for the turn's duration — so any setInterval, like the
 // thinking spinner, never painted). With async spawn the loop stays free to animate
 // while the boat thinks. The mock path is synchronous work wrapped in the async return.
-export async function runTurn(keeperId, prompt, { mock = false, reg, settings } = {}) {
-  const keeper = KEEPERS.find((k) => k.id === keeperId) || { id: keeperId, alias: keeperId, persona: '' };
+// The full system prompt baked into a fresh session (persists across --resume turns).
+// Pure so tests can assert composition without a spawn: persona + the canary marker
+// rule, and — for an advisor-enabled Keeper — the escalate-up ADVISE rule.
+export function boatSystemPrompt(keeper) {
+  return keeper.persona + CANARY_INSTRUCTION + (keeper.advisor ? ADVISE_INSTRUCTION : '');
+}
+
+// opts.keeper overrides the registry lookup — how a non-routable boat (the escalate-up
+// advisor) reuses this exact runner + session mechanics without living in KEEPERS.
+export async function runTurn(keeperId, prompt, { mock = false, reg, settings, keeper: keeperOverride } = {}) {
+  const keeper = keeperOverride || KEEPERS.find((k) => k.id === keeperId) || { id: keeperId, alias: keeperId, persona: '' };
   const existing = reg.sessions[keeperId];
   const fresh = !existing;
 
@@ -143,7 +153,7 @@ export async function runTurn(keeperId, prompt, { mock = false, reg, settings } 
     sessionId = randomUUID();
     // Persona + canary instruction set once at session creation; persists across
     // --resume turns (the system prompt isn't re-sent on resume).
-    args = ['-p', '--session-id', sessionId, '--append-system-prompt', keeper.persona + CANARY_INSTRUCTION, ...extra, '--output-format', 'stream-json', '--verbose', prompt];
+    args = ['-p', '--session-id', sessionId, '--append-system-prompt', boatSystemPrompt(keeper), ...extra, '--output-format', 'stream-json', '--verbose', prompt];
   } else {
     sessionId = existing.sessionId;
     args = ['-p', '--resume', sessionId, ...extra, '--output-format', 'stream-json', '--verbose', prompt];

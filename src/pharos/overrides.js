@@ -8,8 +8,10 @@
 //     "<keeperId>": {
 //       "terms":          { "<term>": <weight>, ... },   // merged onto base terms
 //       "personaContext": "one or two sentences of standing context for this domain",
-//       "model":          "<alias>"   // per-Keeper model override; '' / absent = follow
+//       "model":          "<alias>",  // per-Keeper model override; '' / absent = follow
 //                                     // the global `model` setting (see settings.js)
+//       "advisor":        true        // per-Keeper escalate-up override (see advisor.js);
+//                                     // absent = the Keeper's shipped default
 //     },
 //     ...
 //   }
