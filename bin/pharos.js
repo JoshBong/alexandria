@@ -145,7 +145,7 @@ if (TTY) process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
 console.log('');
 console.log(`  ${C.b}${C.gold}Alexandria${C.reset}  ${C.dim}Pharos routes · Keepers hold · Alexandria remembers${C.reset}`);
 console.log(`  ${C.dim}${mock ? 'mock mode (no API)' : 'live mode'} ${C.reset}${roster}`);
-console.log(`  ${C.gray}logged in as ${C.reset}${C.sand}${profile.name}${C.reset}   ${C.gray}·   /help for commands  ·  /exit to quit${C.reset}`);
+console.log(`  ${C.gray}logged in as ${C.reset}${C.sand}${profile.name}${C.reset}   ${C.gray}·   /help for commands  ·  quit to exit${C.reset}`);
 console.log('');
 
 // Warm every Keeper up front (parallel) so the first switch to a domain resumes a
@@ -444,7 +444,7 @@ const COMMANDS = [
   ['/status', 'show each Keeper and whether it is warm'],
   ['/reset', 'wipe all state for a clean first-run (testing)'],
   ['/help', 'this list'],
-  ['/exit', 'quit'],
+  ['/quit', 'quit Alexandria — also /exit, or just typing "quit" / "q"'],
 ];
 function printHelp() {
   console.log(`  ${C.b}${C.gold}Commands${C.reset}`);
@@ -564,7 +564,10 @@ function subAsk(promptStr) {
 async function handleLine(line) {
   const p = (line || '').trim();
   if (!p) return true;
-  if (p === '/exit' || p === '/quit') return false;
+  // Quit on the bare words too — someone leaving types "quit", not "/quit", and the
+  // old behavior routed that to a Keeper as a question (a boat spawn to not-quit).
+  // Exact single-word match only, so real questions never trip it.
+  if (['/exit', '/quit', '/q', 'exit', 'quit', 'q'].includes(p.toLowerCase())) return false;
   if (p === '/reset') { doReset(); return true; }
   if (p === '/metrics') { showMetrics = !showMetrics; console.log(`  ${C.dim}metrics ${showMetrics ? `${C.green}on` : 'off'}${C.reset}\n`); return true; }
   if (p === '/status') { printStatus(); return true; }
@@ -598,6 +601,17 @@ async function handleLine(line) {
     } else {
       console.log(`  ${C.dim}use ${C.gold}/name <name>${C.reset}${C.dim} to set what your Keepers call you${C.reset}\n`);
     }
+    return true;
+  }
+
+  // An unrecognized /command must NOT fall through to a Keeper as a question — that's
+  // how a typo'd quit ("/qut") spawned a boat instead of closing. Only a lone /word
+  // trips this (no second slash), so a real path in a question ("/Users/… what is
+  // this?") still routes. Show the miss and the way out.
+  const first = p.split(/\s+/)[0];
+  if (/^\/[a-zA-Z?-]+$/.test(first)) {
+    console.log(`  ${C.red}✗ unrecognized command${C.reset} ${C.dim}'${first}'${C.reset}\n`);
+    printHelp();
     return true;
   }
 
