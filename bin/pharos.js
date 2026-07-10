@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { getSettings, saveSettings } from '../src/pharos/settings.js';
 import { hasProfile, saveProfile, getProfile } from '../src/pharos/profile.js';
-import { layout, visLen, wrapInput } from '../src/pharos/boxui.js';
+import { layout, visLen, wrapInput, wrapAnsi } from '../src/pharos/boxui.js';
 import { initInput, reduceKey, parseCsiU } from '../src/pharos/input.js';
 import { collapseCode, mdRender } from '../src/pharos/render.js';
 import { initMenu, menuKey, MODEL_CHOICES, SHARED_TOOL_CHOICES, SETTINGS_SCHEMA } from '../src/pharos/menu.js';
@@ -449,6 +449,7 @@ const COMMANDS = [
 function printHelp() {
   console.log(`  ${C.b}${C.gold}Commands${C.reset}`);
   for (const [c, d] of COMMANDS) console.log(`    ${C.gold}${c.padEnd(10)}${C.reset} ${C.dim}${d}${C.reset}`);
+  console.log(`  ${C.dim}keys: Shift+↑/↓ or PgUp/PgDn scroll the transcript · Shift+Enter = newline${C.reset}`);
   console.log(`  ${C.dim}anything else is a question — Pharos routes it to the right Keeper.${C.reset}\n`);
 }
 
@@ -681,7 +682,7 @@ async function startBox() {
   const bar = () => {
     if (scrollOff > 0) { // paging through history — show position + how to get back to live
       const above = Math.max(0, history.length - regionRows() - scrollOff);
-      const tag = `↑ scrolled${above ? ` · ${above} above` : ' · top'} · PgDn → live `;
+      const tag = `↑ scrolled${above ? ` · ${above} above` : ' · top'} · Shift+↓/PgDn → live `;
       const fill = Math.max(8, W() - visLen(tag) - 2);
       return `  ${C.gold}${tag}${C.bronze}${'─'.repeat(fill)}${C.reset}`;
     }
@@ -862,7 +863,11 @@ async function startBox() {
   // line is also retained in `history` for scrollback.
   const out = (s = '') => {
     sync();
-    const lines = String(s).split('\n');
+    // Pre-wrap EVERY line to the terminal width (ANSI-aware, hanging indent): the
+    // scroll idiom below advances exactly one region row per line, so a line the
+    // terminal itself would soft-wrap desyncs the row math (spinner/box drift) and
+    // breaks the one-history-entry-per-row invariant paging repaints depend on.
+    const lines = String(s).split('\n').flatMap((ln) => wrapAnsi(ln, cols()));
     for (const ln of lines) history.push(ln);
     // Paging up: don't disturb the view — buffer the output and hold the reader's position
     // (shift the offset by what arrived so the same lines stay on screen).
@@ -960,7 +965,15 @@ async function startBox() {
     pastes.clear(); pasteCount = 0; // the line left the box — its pastes are consumed
     if (!expanded) return;
     const raw = (line || '').trim();
-    const echo = raw ? `  ${C.deep}⟡${C.reset} ${C.sand}${raw.replace(/\n/g, '\n    ')}${C.reset}` : '';
+    // Pre-wrap the echo at a 4-cell gutter ('  ⟡ ') so every visual row of a multi-line
+    // prompt lines up under the marker — the old \n-only indent left terminal-soft-wrapped
+    // rows flush at column 0. wrapInput handles hard \n AND width (CJK-safe).
+    const echoRows = raw ? wrapInput(raw, 0, 4, 4, cols()).rows : [];
+    const echo = echoRows
+      .map((r, i) => (i === 0
+        ? `  ${C.deep}⟡${C.reset} ${C.sand}${r}${C.reset}`
+        : `    ${C.sand}${r}${C.reset}`))
+      .join('\n');
     queue.push({ echo, raw, text: expanded });
     if (processing) drawBox(); // a turn is already running → show this one as pending under the spinner
     drain();
@@ -1040,6 +1053,11 @@ async function startBox() {
     // region-height, minus a row of overlap for orientation). Any other key snaps to live.
     if (key.name === 'pageup') { scrollOff = Math.min(maxScroll(), scrollOff + Math.max(1, regionRows() - 1)); return renderScroll(); }
     if (key.name === 'pagedown') { scrollOff = Math.max(0, scrollOff - Math.max(1, regionRows() - 1)); return renderScroll(); }
+    // Shift+↑/↓ scroll line-wise — the Mac-friendly binding (PgUp/PgDn need Fn+arrows on a
+    // laptop keyboard, which nobody finds; the mouse wheel can't reach the region's history
+    // because the pinned box lives in a DECSTBM scroll region, not the alt screen).
+    if (key.shift && key.name === 'up') { scrollOff = Math.min(maxScroll(), scrollOff + 1); return renderScroll(); }
+    if (key.shift && key.name === 'down') { scrollOff = Math.max(0, scrollOff - 1); return renderScroll(); }
     if (scrollOff > 0) { scrollOff = 0; renderScroll(); } // typing/navigating snaps back to the live tail, then handle the key
     if (key.ctrl && key.name === 'z') return suspend(); // Ctrl+Z → background to the shell like a normal program
     // kitty keyboard protocol: a key with no legacy encoding (Shift+Enter, Esc, …) arrives as

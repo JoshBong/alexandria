@@ -1,6 +1,6 @@
 {
   "name": "alexandria",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Personal AI orchestration layer on Claude Code. Pharos routes prompts to warm per-domain Keepers over a memory substrate.",
   "type": "module",
   "license": "MIT",

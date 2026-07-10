@@ -5,7 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { stripAnsi, visLen, charWidth, strWidth, layout, inputWindow, visualRows, wrapInput } from '../src/pharos/boxui.js';
+import { stripAnsi, visLen, charWidth, strWidth, layout, inputWindow, visualRows, wrapInput, wrapAnsi } from '../src/pharos/boxui.js';
 
 test('visLen ignores SGR colour codes and counts the marker as one cell', () => {
   assert.equal(visLen('\x1b[38;5;220m⟡\x1b[0m'), 1);
@@ -144,4 +144,50 @@ test('visualRows counts wrap', () => {
   assert.equal(visualRows('x'.repeat(80), 80), 1);
   assert.equal(visualRows('x'.repeat(81), 80), 2);
   assert.equal(visualRows('\x1b[2m' + 'x'.repeat(40) + '\x1b[0m', 80), 1); // colour doesn't add rows
+});
+
+// ---- wrapAnsi: the out() pre-wrapper — every transcript row must be ≤ cols cells ----
+
+test('wrapAnsi: short line passes through untouched', () => {
+  assert.deepEqual(wrapAnsi('hello', 80), ['hello']);
+  assert.deepEqual(wrapAnsi('', 80), ['']);
+});
+
+test('wrapAnsi: long plain line wraps to ≤ cols rows', () => {
+  const rows = wrapAnsi('x'.repeat(25), 10);
+  assert.equal(rows.length, 3);
+  for (const r of rows) assert.ok(strWidth(r) <= 10, `row too wide: ${r}`);
+  assert.equal(rows.join(''), 'x'.repeat(25)); // nothing lost
+});
+
+test('wrapAnsi: continuation rows hang at the line\'s leading indent (bullets stay aligned)', () => {
+  const rows = wrapAnsi('  • ' + 'a'.repeat(20), 12);
+  assert.ok(rows.length > 1);
+  for (const r of rows.slice(1)) assert.match(r, /^  /); // hanging indent = 2 leading spaces
+  for (const r of rows) assert.ok(strWidth(r) <= 12);
+});
+
+test('wrapAnsi: SGR codes are zero-width and the active colour survives the row break', () => {
+  const dim = '\x1b[2m';
+  const reset = '\x1b[0m';
+  const rows = wrapAnsi(`${dim}${'z'.repeat(15)}${reset}`, 10);
+  assert.equal(rows.length, 2);
+  assert.ok(strWidth(rows[0]) <= 10);
+  assert.ok(rows[1].startsWith(dim), 'continuation re-applies the open SGR');
+  assert.equal(rows.map(r => r.replace(/\x1b\[[0-9;]*m/g, '')).join(''), 'z'.repeat(15));
+});
+
+test('wrapAnsi: a reset clears the carry-over — later rows do not re-apply stale colour', () => {
+  const dim = '\x1b[2m';
+  const reset = '\x1b[0m';
+  // colour closes BEFORE the wrap point → the continuation row must start plain
+  const rows = wrapAnsi(`${dim}ab${reset}${'p'.repeat(15)}`, 10);
+  assert.ok(rows.length > 1);
+  assert.ok(!rows[1].includes('\x1b['), 'no stale SGR on the continuation');
+});
+
+test('wrapAnsi: wide chars never overflow the cell budget', () => {
+  const rows = wrapAnsi('字'.repeat(12), 10); // 24 cells at 10/row
+  for (const r of rows) assert.ok(strWidth(r) <= 10);
+  assert.equal(rows.join(''), '字'.repeat(12));
 });

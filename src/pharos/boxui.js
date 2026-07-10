@@ -82,6 +82,54 @@ export function inputWindow(buf, curIdx, avail) {
   return { shown: buf.slice(start, start + avail), start, offset: curIdx - start };
 }
 
+// Wrap ONE transcript line to `cols`-cell rows, ANSI-aware. The box writer (out()) must
+// never emit a line wider than the terminal: it scrolls the region ONE row per line and
+// paints at the region bottom, so a line the TERMINAL soft-wraps occupies extra rows the
+// row math never accounted for — the spinner/box drift and the history repaint mangles
+// (every history entry must be exactly one visual row). Rules: SGR sequences are copied
+// atomically (zero width) and the ACTIVE ones are re-applied at the start of each
+// continuation row (a colour span survives the break; \x1b[0m clears the carry-over);
+// wide chars count 2 cells; continuation rows get a hanging indent equal to the line's
+// leading spaces (capped at half the width) so wrapped bullets/gutters stay aligned.
+export function wrapAnsi(line, cols) {
+  const s = String(line);
+  if (!cols || cols <= 0 || strWidth(s) <= cols) return [s];
+  const lead = /^ */.exec(stripAnsi(s))[0].length;
+  const hang = ' '.repeat(Math.min(lead, Math.floor(cols / 2)));
+  const rows = [];
+  let cur = '';
+  let w = 0;
+  let sgr = ''; // concatenation of the SGR sequences currently in effect
+  let first = true;
+  let i = 0;
+  while (i < s.length) {
+    if (s.charCodeAt(i) === 0x1b) {
+      const m = /^\x1b\[[0-9;]*m/.exec(s.slice(i));
+      if (m) {
+        cur += m[0];
+        sgr = m[0] === '\x1b[0m' ? '' : sgr + m[0];
+        i += m[0].length;
+        continue;
+      }
+    }
+    const cp = s.codePointAt(i);
+    const ch = String.fromCodePoint(cp);
+    const cw = charWidth(cp);
+    const cap = first ? cols : cols - hang.length;
+    if (w + cw > cap && w > 0) {
+      rows.push(cur);
+      first = false;
+      cur = hang + sgr;
+      w = 0;
+    }
+    cur += ch;
+    w += cw;
+    i += ch.length;
+  }
+  rows.push(cur);
+  return rows;
+}
+
 // How many visual rows a logical line occupies when wrapped at `cols` (used to reason
 // about output that may wrap; the live writer relies on the terminal to wrap, this is
 // for tests/decisions).
