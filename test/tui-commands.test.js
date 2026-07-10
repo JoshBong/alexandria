@@ -46,6 +46,16 @@ test('a real question still routes — including one that starts with a path', (
   assert.ok(!out.includes('unrecognized command'));
 });
 
+test('/restart re-execs a fresh instance (child banner appears after "restarting")', () => {
+  const { out, status } = runTui(['/restart']);
+  assert.equal(status, 0);
+  assert.match(out, /restarting/);
+  // the respawned child prints its own startup banner, then hits stdin EOF and exits
+  const banners = out.split('Pharos routes').length - 1;
+  assert.equal(banners, 2, 'exactly one re-exec: parent banner + child banner');
+  assert.ok(!out.includes('unrecognized command'), '/restart is a real command');
+});
+
 test('/help lists the commands', () => {
   const { out } = runTui(['/help', 'quit']);
   assert.match(out, /Commands/);

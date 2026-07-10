@@ -437,7 +437,8 @@ function doReset() {
 
 const COMMANDS = [
   ['/research', 'fan-out research (--idea for a startup verdict, --broad default)'],
-  ['/update', 'update Alexandria from GitHub (new version loads on next launch)'],
+  ['/update', 'update Alexandria from GitHub (then /restart to load it)'],
+  ['/restart', 'relaunch Alexandria in place — loads a freshly updated version'],
   ['/settings', 'view & toggle settings'],
   ['/name', 'change what your Keepers call you'],
   ['/metrics', 'toggle the per-turn token + timing line'],
@@ -525,7 +526,7 @@ async function doUpdate(force) {
   const r = await selfUpdate({ force });
   spin.stop();
   if (r.status === 'current') console.log(`  ${C.green}✓${C.reset} ${C.dim}already up to date (${r.version})${C.reset}\n`);
-  else if (r.status === 'updated') console.log(`  ${C.green}✓${C.reset} updated ${C.dim}${r.from}${C.reset} → ${C.b}${r.to}${C.reset} ${C.dim}— restart alexandria to load it${C.reset}\n`);
+  else if (r.status === 'updated') console.log(`  ${C.green}✓${C.reset} updated ${C.dim}${r.from}${C.reset} → ${C.b}${r.to}${C.reset} ${C.dim}— ${C.gold}/restart${C.reset}${C.dim} to load it${C.reset}\n`);
   else console.log(`  ${C.red}✗ update failed:${C.reset} ${C.dim}${r.reason}${force ? '' : ' — /update --force to reinstall anyway'}${C.reset}\n`);
 }
 
@@ -561,6 +562,18 @@ function subAsk(promptStr) {
   return ask(rlNonTty, promptStr);
 }
 
+// /restart sets this, then quits the loop like /exit — the exit sites re-exec instead
+// of exiting. A Node process can't hot-reload its own ESM graph, so "restart" = restore
+// the terminal, spawn a fresh instance of this same bin (which reads the freshly
+// UPDATED files after /update), and mirror its exit code when it eventually quits.
+let restartAfterExit = false;
+function respawnIfRequested() {
+  if (!restartAfterExit) return;
+  console.log(`  ${C.dim}— restarting…${C.reset}`);
+  const r = spawnSync(process.execPath, process.argv.slice(1), { stdio: 'inherit' });
+  process.exit(r.status ?? 0);
+}
+
 // Handle one submitted line. Returns false to quit the loop, true to keep going.
 async function handleLine(line) {
   const p = (line || '').trim();
@@ -569,6 +582,7 @@ async function handleLine(line) {
   // old behavior routed that to a Keeper as a question (a boat spawn to not-quit).
   // Exact single-word match only, so real questions never trip it.
   if (['/exit', '/quit', '/q', 'exit', 'quit', 'q'].includes(p.toLowerCase())) return false;
+  if (p === '/restart') { restartAfterExit = true; return false; }
   if (p === '/reset') { doReset(); return true; }
   if (p === '/metrics') { showMetrics = !showMetrics; console.log(`  ${C.dim}metrics ${showMetrics ? `${C.green}on` : 'off'}${C.reset}\n`); return true; }
   if (p === '/status') { printStatus(); return true; }
@@ -1104,7 +1118,8 @@ async function startBox() {
   await loopDone;
   stdin.removeListener('keypress', onKey);
   console.log = origLog;
-  teardown();
+  teardown(); // terminal fully restored BEFORE a possible re-exec inherits it
+  respawnIfRequested();
   origLog(`  ${C.dim}— Alexandria out.${C.reset}`);
   process.exit(0);
 }
@@ -1132,5 +1147,5 @@ if (TTY) {
   };
   showPrompt();
   rlNonTty.on('line', (line) => { queue.push(line); drain(); });
-  rlNonTty.on('close', () => { console.log(`  ${C.dim}— Alexandria out.${C.reset}`); process.exit(0); });
+  rlNonTty.on('close', () => { respawnIfRequested(); console.log(`  ${C.dim}— Alexandria out.${C.reset}`); process.exit(0); });
 }
