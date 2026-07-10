@@ -235,7 +235,7 @@ function printMetrics(r) {
 // /settings — view and toggle. `/settings` lists; `/settings <key>` flips a bool;
 // `/settings <key> <value>` sets a string (sharedTools/mcpConfig). Writes through to
 // .pharos/settings.json so the next turn's getSettings() picks it up.
-const BOOL_KEYS = ['advisor', 'reframe', 'revoice', 'skipPerms', 'prewarm', 'metrics', 'kittyKeys'];
+const BOOL_KEYS = ['advisor', 'reframe', 'revoice', 'skipPerms', 'prewarm', 'metrics', 'kittyKeys', 'mouseScroll'];
 const STR_KEYS = ['model', 'sharedTools', 'mcpConfig'];
 const NUM_KEYS = ['contextWindow'];
 const SETTING_HELP = {
@@ -246,6 +246,7 @@ const SETTING_HELP = {
   prewarm: 'warm all Keepers on startup',
   metrics: 'show the per-turn metrics line',
   kittyKeys: 'enable Shift+Enter (kitty keyboard protocol; ghostty/kitty/WezTerm)',
+  mouseScroll: 'mouse wheel scrolls the transcript (while on, hold Shift to select text)',
   model: 'which model the Keepers run on (e.g. sonnet, opus, haiku)',
   sharedTools: 'extra built-in tools every Keeper can load on demand',
   mcpConfig: 'shared MCP connector config (browser/Gmail/…) for every Keeper',
@@ -284,6 +285,7 @@ function changeSettings(args) {
     const val = rest.length ? /^(1|true|on|yes)$/i.test(rest[0]) : !cfg[key];
     cfg = saveSettings({ [key]: val });
     if (key === 'metrics') showMetrics = val;
+    if (key === 'mouseScroll' && boxCtl?.setMouse) boxCtl.setMouse(val); // applies live, no restart
     if (SPAWN_KEYS.includes(key)) flushWarmSessions();
     console.log(`  ${C.green}✓${C.reset} ${key} ${val ? `${C.green}on` : 'off'}${C.reset}${SPAWN_KEYS.includes(key) ? `${C.dim} — Keepers will re-warm${C.reset}` : ''}\n`);
   } else if (STR_KEYS.includes(key)) {
@@ -351,6 +353,7 @@ function applyMenuIntent(it) {
   if (it.type === 'toggle') {
     cfg = saveSettings({ [it.key]: !cfg[it.key] });
     if (it.key === 'metrics') showMetrics = cfg.metrics;
+    if (it.key === 'mouseScroll' && boxCtl?.setMouse) boxCtl.setMouse(cfg.mouseScroll); // live
     if (SPAWN_KEYS.includes(it.key)) flushWarmSessions();
   } else if (it.type === 'set') {
     if (it.kind === 'num') {
@@ -450,7 +453,8 @@ const COMMANDS = [
 function printHelp() {
   console.log(`  ${C.b}${C.gold}Commands${C.reset}`);
   for (const [c, d] of COMMANDS) console.log(`    ${C.gold}${c.padEnd(10)}${C.reset} ${C.dim}${d}${C.reset}`);
-  console.log(`  ${C.dim}keys: Shift+↑/↓ or PgUp/PgDn scroll the transcript · Shift+Enter = newline${C.reset}`);
+  console.log(`  ${C.dim}keys: mouse wheel / Shift+↑/↓ / PgUp/PgDn scroll the transcript · Shift+Enter = newline${C.reset}`);
+  console.log(`  ${C.dim}wheel scrolling owns the mouse — hold Shift to select text (/settings mouseScroll to disable)${C.reset}`);
   console.log(`  ${C.dim}anything else is a question — Pharos routes it to the right Keeper.${C.reset}\n`);
 }
 
@@ -938,8 +942,16 @@ async function startBox() {
     }
     drawBox();
   };
+  // Mouse reporting (SGR encoding) so the WHEEL can drive the in-app scrollback — the
+  // pinned box lives in a DECSTBM region on the main screen, so region-scrolled lines
+  // never reach the terminal's native scrollback and the native wheel shows stale
+  // frames. Trade-off (why this is a setting): while the app owns the mouse, plain
+  // drag-to-select needs Shift held — terminal-standard for mouse TUIs, but if you
+  // copy from the transcript constantly, `/settings mouseScroll` turns it off.
+  const setMouse = (on) => { if (TTY) w(on ? '\x1b[?1000h\x1b[?1006h' : '\x1b[?1000l\x1b[?1006l'); };
   const teardown = () => {
     if (kittyKeys) w('\x1b[<u'); // pop the kitty keyboard-protocol flags we pushed
+    setMouse(false); // always release the mouse, even if the setting flipped mid-run
     if (TTY) w('\x1b[?2004l'); // disable bracketed paste
     w('\x1b[r'); // release the scroll region
     w('\x1b[1;1H\x1b[2K'); // clear the pinned navbar row
@@ -1033,6 +1045,7 @@ async function startBox() {
       if (stdin.setRawMode) stdin.setRawMode(true);
       if (TTY) w('\x1b[?2004h');
       if (kittyKeys) w('\x1b[>1u');
+      if (cfg.mouseScroll) setMouse(true);
       stdin.resume();
       stdin.on('keypress', onKey);
       out0.on('resize', onResize);
@@ -1068,10 +1081,20 @@ async function startBox() {
     if (key.name === 'pageup') { scrollOff = Math.min(maxScroll(), scrollOff + Math.max(1, regionRows() - 1)); return renderScroll(); }
     if (key.name === 'pagedown') { scrollOff = Math.max(0, scrollOff - Math.max(1, regionRows() - 1)); return renderScroll(); }
     // Shift+↑/↓ scroll line-wise — the Mac-friendly binding (PgUp/PgDn need Fn+arrows on a
-    // laptop keyboard, which nobody finds; the mouse wheel can't reach the region's history
-    // because the pinned box lives in a DECSTBM scroll region, not the alt screen).
+    // laptop keyboard, which nobody finds).
     if (key.shift && key.name === 'up') { scrollOff = Math.min(maxScroll(), scrollOff + 1); return renderScroll(); }
     if (key.shift && key.name === 'down') { scrollOff = Math.max(0, scrollOff - 1); return renderScroll(); }
+    // Mouse wheel (SGR mouse reporting, enabled when mouseScroll is on): button 64 = wheel
+    // up, 65 = wheel down. 3 lines per notch. Any other mouse event (clicks, drags) is
+    // swallowed so it never leaks bytes into the input buffer.
+    const seq = typeof key.sequence === 'string' ? key.sequence : '';
+    const wheel = /^\x1b\[<(6[45]);\d+;\d+[Mm]$/.exec(seq);
+    if (wheel) {
+      if (wheel[1] === '64') scrollOff = Math.min(maxScroll(), scrollOff + 3);
+      else scrollOff = Math.max(0, scrollOff - 3);
+      return renderScroll();
+    }
+    if (/^\x1b\[<\d+;\d+;\d+[Mm]$/.test(seq)) return; // non-wheel mouse event — ignore
     if (scrollOff > 0) { scrollOff = 0; renderScroll(); } // typing/navigating snaps back to the live tail, then handle the key
     if (key.ctrl && key.name === 'z') return suspend(); // Ctrl+Z → background to the shell like a normal program
     // kitty keyboard protocol: a key with no legacy encoding (Shift+Enter, Esc, …) arrives as
@@ -1101,11 +1124,12 @@ async function startBox() {
   // arrive as distinct CSI-u sequences. Surgical: keys with a legacy encoding (Ctrl+W, arrows,
   // printables) are unaffected, so readline's parsing of them still works. Popped in teardown.
   if (kittyKeys) w('\x1b[>1u');
+  if (cfg.mouseScroll) setMouse(true);
   stdin.resume();
   sync();
   setRegion();
 
-  boxCtl = { out, spinner, redraw: drawBox, setStatus, teardown, openMenu };
+  boxCtl = { out, spinner, redraw: drawBox, setStatus, teardown, openMenu, setMouse };
   const origLog = console.log;
   console.log = (...a) => out(a.map((x) => (typeof x === 'string' ? x : String(x))).join(' '));
   out0.on('resize', onResize);

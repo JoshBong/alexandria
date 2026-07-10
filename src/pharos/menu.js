@@ -34,6 +34,7 @@ export const SETTINGS_SCHEMA = [
   { key: 'sharedTools', kind: 'submenu', screen: 'tools' },
   { key: 'metrics', kind: 'bool' },
   { key: 'kittyKeys', kind: 'bool' },
+  { key: 'mouseScroll', kind: 'bool' },
   { key: 'contextWindow', kind: 'num' },
   { key: 'mcpConfig', kind: 'str' },
   { key: 'advisor', kind: 'bool' },

@@ -47,6 +47,11 @@ import path from 'node:path';
 //               the verdict back to the same warm Keeper session. This is the GLOBAL
 //               kill switch; which Keepers participate is per-Keeper (keepers.js
 //               `advisor` + keepers.local.json override). Default ON.
+//   mouseScroll — SGR mouse reporting in the box so the WHEEL scrolls the in-app
+//               transcript history (the pinned box's scroll region never reaches the
+//               terminal's native scrollback). Trade-off: while on, drag-to-select in
+//               the terminal needs Shift held. Default ON; turn off if you copy from
+//               the transcript more than you scroll it.
 export const DEFAULTS = {
   reframe: false,
   revoice: false,
@@ -55,6 +60,7 @@ export const DEFAULTS = {
   metrics: false,
   kittyKeys: true,
   advisor: true,
+  mouseScroll: true,
 };
 
 // String-valued settings (not booleans) — resolved separately from the bool flags.
@@ -85,6 +91,7 @@ const ENV = {
   metrics: 'ALEXANDRIA_METRICS',
   kittyKeys: 'ALEXANDRIA_KITTY_KEYS',
   advisor: 'ALEXANDRIA_ADVISOR',
+  mouseScroll: 'ALEXANDRIA_MOUSE_SCROLL',
 };
 
 const STRING_ENV = {
