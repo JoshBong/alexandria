@@ -8,7 +8,7 @@
 
 import { spawn } from 'node:child_process';
 
-export function askOnce(prompt, { model, system, tools, skipPerms } = {}) {
+export function askOnce(prompt, { model, system, tools, skipPerms, timeoutMs } = {}) {
   return new Promise((resolve) => {
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY;
@@ -19,10 +19,11 @@ export function askOnce(prompt, { model, system, tools, skipPerms } = {}) {
     // `tools` (+ `skipPerms`) let a caller grant this one-shot real capability — the
     // research fan-out workers pass `WebSearch,WebFetch` so they can actually search;
     // skipPerms mirrors a boat so a headless call never hangs on a permission prompt.
+    // `tools: ''` is meaningful (disables ALL built-ins), so the guard is on undefined.
     const args = ['-p',
       ...(model ? ['--model', model] : []),
       ...(system ? ['--append-system-prompt', system] : []),
-      ...(tools ? ['--tools', tools] : []),
+      ...(tools !== undefined ? ['--tools', tools] : []),
       ...(skipPerms ? ['--dangerously-skip-permissions'] : []),
       '--setting-sources', 'local', '--output-format', 'json', prompt];
     let child;
@@ -31,10 +32,23 @@ export function askOnce(prompt, { model, system, tools, skipPerms } = {}) {
     } catch {
       return resolve('');
     }
+    // Optional watchdog: a hung boat resolves '' instead of hanging the caller forever
+    // (the research fan-out awaits N of these in a Promise.all). Resolve straight from the
+    // timer — 'close' can lag arbitrarily when a grandchild keeps the stdout pipe open —
+    // and destroy the pipe so it can't hold the event loop. No timeoutMs = old behavior.
+    let timedOut = false;
+    const timer = timeoutMs ? setTimeout(() => {
+      timedOut = true;
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      try { child.stdout.destroy(); } catch { /* already closed */ }
+      resolve('');
+    }, timeoutMs) : null;
     let out = '';
     child.stdout.on('data', (d) => { out += d; });
-    child.on('error', () => resolve(''));
+    child.on('error', () => { if (timer) clearTimeout(timer); resolve(''); });
     child.on('close', () => {
+      if (timer) clearTimeout(timer);
+      if (timedOut) return; // already resolved by the watchdog
       let text = out.trim();
       try { text = JSON.parse(text).result ?? text; } catch { /* relay raw */ }
       resolve(text);

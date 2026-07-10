@@ -47,6 +47,16 @@ test('workers run with web tools + the mode worker-system prompt', async () => {
   }
 });
 
+test('non-worker stages are sandboxed (tools:"") and every stage carries a timeout', async () => {
+  const { ask, calls } = makeAsk();
+  await research('q', { ask, mode: 'broad', timeoutMs: 123 });
+  // decompose (first) + synth (last) get NO tools — '' disables all built-ins, so the
+  // web-derived synth prompt can't reach Bash even under skipPerms.
+  assert.equal(calls[0].opts.tools, '');
+  assert.equal(calls.at(-1).opts.tools, '');
+  for (const c of calls) assert.equal(c.opts.timeoutMs, 123);
+});
+
 test('idea mode: uses the fixed lenses, NO decompose call, council verdict', async () => {
   const { ask, calls } = makeAsk();
   const out = await research('a group-dinner booking app', { ask, mode: 'idea' });

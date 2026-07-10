@@ -21,6 +21,12 @@ export const DECOMPOSE_MODEL = 'haiku';
 export const WORKER_MODEL = 'sonnet';
 export const SYNTH_MODEL = 'opus';
 const WEB_TOOLS = 'WebSearch,WebFetch';
+// Every stage runs skipPerms, so tool grants are the whole sandbox: workers get ONLY the
+// web pair; decompose + synth get NO tools ('' disables all built-ins) — the synth prompt
+// embeds web-fetched worker text, and a toolless boat turns that prompt-injection surface
+// into plain text. One generous per-call timeout so a single hung boat can't hang the run.
+const NO_TOOLS = '';
+export const STAGE_TIMEOUT_MS = 10 * 60_000;
 
 // The live default ask: a tool-enabled, permission-skipping one-shot (workers need to
 // actually search; skipPerms keeps a headless call from hanging on a prompt).
@@ -106,6 +112,7 @@ export async function research(question, opts = {}) {
     decomposeModel = DECOMPOSE_MODEL,
     workerModel = WORKER_MODEL,
     synthModel = SYNTH_MODEL,
+    timeoutMs = STAGE_TIMEOUT_MS,
     onStage = () => {},
   } = opts;
   const m = MODES[mode] || MODES.broad;
@@ -117,7 +124,7 @@ export async function research(question, opts = {}) {
   if (m.lenses) {
     subs = m.lenses.slice(0, n);
   } else {
-    const raw = await ask(m.decompose(q, n), { model: decomposeModel });
+    const raw = await ask(m.decompose(q, n), { model: decomposeModel, tools: NO_TOOLS, timeoutMs });
     subs = parseAngles(raw, n, q);
   }
 
@@ -126,7 +133,7 @@ export async function research(question, opts = {}) {
   onStage({ stage: 'fanout', count: subs.length });
   const findings = await Promise.all(
     subs.map((angle) =>
-      ask(m.worker(q, angle), { model: workerModel, system: m.workerSystem, tools: WEB_TOOLS })
+      ask(m.worker(q, angle), { model: workerModel, system: m.workerSystem, tools: WEB_TOOLS, timeoutMs })
         .then((text) => ({ angle, text: String(text || '').trim(), error: !String(text || '').trim() }))
         .catch(() => ({ angle, text: '', error: true })),
     ),
@@ -134,7 +141,7 @@ export async function research(question, opts = {}) {
 
   // Stage 3 — synthesize.
   onStage({ stage: 'synthesize' });
-  const report = await ask(m.synthesize(q, findingsBlock(findings)), { model: synthModel, system: m.synthSystem });
+  const report = await ask(m.synthesize(q, findingsBlock(findings)), { model: synthModel, system: m.synthSystem, tools: NO_TOOLS, timeoutMs });
 
   return { question: q, mode, angles: subs, findings, report: String(report || '').trim() };
 }
