@@ -1,0 +1,44 @@
+fix the PreCompact hook so it writes the handoff before compaction
+refactor retrieval.cjs to seed the domain profiles from the memory index
+why is the docs MCP showing pending approval
+write the scoring function for the Pharos classifier
+the gitnexus index is stale, reindex the repo
+add a confidence margin to the classify output and debug the parser
+what's on my calendar this weekend
+book the flight to Lisbon before the visa expires
+remind me to call my family this weekend
+did I journal about the hike last sunday
+schedule a gym session friday morning
+plan the second leg of the summer trip
+help me start the discussion post for this week
+review my linear algebra pset before I submit it
+which courses should I take in the fall semester
+explain backprop for my deep learning notes
+do today's leetcode and log it in my study plan
+summarize the lecture on optimization
+prep questions for the Acme meeting
+score my resume the way a recruiter would
+draft a follow-up to the recruiter intro
+what's a fair TC to counter the offer with
+update my LinkedIn headline for recruiting
+should I take the contract gig this week or focus on studying
+tell me a joke
+I just thought of a totally new side project, not sure what bucket
+random question, how do octopuses actually think
+what's the meaning of the name Alexandria anyway
+counter at 150
+ship it
+does it pass now
+is 150 too low to push back on
+they still haven't gotten back to me
+the optimization isn't converging in my code
+my flight got delayed so reschedule the interview
+skip class to prep for the acme onsite
+build a study schedule for the semester
+fix that one
+wrap the pset tonight
+lock in the lisbon dates
+can you take a look at the hysteresis thing
+how'd the mock go
+remind me about the thing tomorrow
+is this worth building or should I just drop it

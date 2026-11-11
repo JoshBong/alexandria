@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Alexandria — Terminal Gods (activation prototype)</title>
+<style>
+  :root { --bg:#070a12; --ink:#e8dcc0; --gold:#ffcf3f; --bronze:#b8862b; --ash:#8a8f9a; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { height:100%; background:var(--bg); color:var(--ink);
+    font-family:ui-monospace,"SF Mono",Menlo,monospace; overflow:hidden; }
+  #wrap { position:fixed; inset:0; display:flex; flex-direction:column; }
+  #stageWrap { position:relative; flex:1; min-height:0; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; display:block;
+    image-rendering:pixelated; image-rendering:crisp-edges; cursor:pointer; }
+
+  #bar { position:absolute; top:14px; left:50%; transform:translateX(-50%);
+    display:flex; gap:6px; z-index:5; align-items:center;
+    background:rgba(8,10,18,.55); border:1px solid rgba(184,134,43,.35);
+    border-radius:10px; padding:6px 8px; backdrop-filter:blur(6px); }
+  #bar .lbl { font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--bronze); padding:0 4px; }
+  button { font:inherit; font-size:12px; color:var(--ash); cursor:pointer;
+    background:transparent; border:1px solid transparent; border-radius:7px; padding:5px 10px; }
+  button:hover { color:var(--ink); }
+  button.on { color:#0b0c12; background:var(--gold); border-color:var(--gold); font-weight:600;
+    box-shadow:0 0 14px rgba(255,207,63,.5); }
+  #bar .sep { width:1px; align-self:stretch; background:rgba(184,134,43,.3); margin:0 2px; }
+
+  #shell { z-index:5; padding:14px 18px 18px; }
+  #inputline { max-width:920px; margin:0 auto; display:flex; align-items:center; gap:10px;
+    background:linear-gradient(180deg,rgba(20,16,8,.75),rgba(8,8,14,.85));
+    border:1px solid rgba(184,134,43,.5); border-radius:14px; padding:13px 16px;
+    box-shadow:0 0 0 1px rgba(0,0,0,.4), 0 8px 30px rgba(0,0,0,.55), inset 0 0 26px rgba(255,207,63,.06); }
+  #beacon { color:var(--gold); text-shadow:0 0 12px rgba(255,207,63,.8); font-size:18px; }
+  #chev { color:var(--bronze); }
+  #ph { color:var(--ash); flex:1; }
+  #caret { width:8px; height:17px; background:var(--gold); box-shadow:0 0 10px rgba(255,207,63,.7);
+    animation:blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  #hint { max-width:920px; margin:8px auto 0; font-size:11px; color:var(--ash); display:flex;
+    justify-content:space-between; opacity:.8; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stageWrap">
+    <canvas id="stage"></canvas>
+    <div id="bar">
+      <span class="lbl">activate</span>
+      <div class="grp" id="godGrp"></div>
+      <span class="sep"></span>
+      <button id="clearBtn">Clear</button>
+    </div>
+  </div>
+  <div id="shell">
+    <div id="inputline">
+      <span id="beacon">⟡</span><span id="chev">›</span>
+      <span id="ph">ask Alexandria…</span><span id="caret"></span>
+    </div>
+    <div id="hint">
+      <span>Pharos routes · Keepers hold · Alexandria remembers</span>
+      <span>click a god to activate — it hovers + draws its golden aura</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================================
+// Alexandria — Terminal Gods scene. The five Keeper-gods stand on the Pharos
+// plaza. Whichever god(s) are ACTIVE hover above their platform, brighten, and
+// cast a golden aura + expanding floor ripples; the rest dim back. Sprites are
+// the extracted reference pixel-art (see web/spritegen.cjs — same PAL + grids).
+// Click a god (or use the bar) to toggle activation.
+// ============================================================================
+
+// ---- extracted sprite data (mirror of web/spritegen.cjs) -------------------
+const PAL=["#010102","#e6a431","#2d578f","#cfd0cb","#8b988f","#b56e19","#4a8ac3","#59327b","#1d6954","#3cae82","#3a3b4c","#9d64d6","#e14b15","#bb2b14","#707879","#f1d79b","#4a7163","#f2c44c","#343145","#528dce","#6e4346"];
+const GODGRIDS={
+  ptah:[
+    "...000000...","..02222220..",".0222222220.",".0222222220.",".0111111220.",".044444410..",
+    ".0g04g040g..",".044g444gg..",".044g444g...",".044444gg0..","..04gg4g00..","..0444g0ii..",
+    ".0i0g00iii1.","0910g0iaa1..","0980g01118..","0990g08889..","0899889999..","0989998888..",
+    "0998999998..","08888899988.","09999988888.",".099999888..",".0111111550.",".0111111550.",
+    ".0888888880.",".0999998880.",".0999988880.",".0998899880.",".0889998880.","..09998880..",
+    "..09989880..","..0889880...","..0899880...","...0889880..","....08998800",".....0088880",".......00000"],
+  ra:[
+    "......0000....",".....011110...","....01cccc10..","...01cccccc10.","..01cccccccc10","..01cccccccc10",
+    "..01cccccccd10","...01cccccd10.","....01cccc10..",".....011110...",".....0000000..","....022222220.",
+    "...01221ff1220","...0f21f00f120",".00kggfi00f120",".00ggggfiff12.",".00gii1ffff12.","000011ffff52..",
+    "..025ffff522..","..0221ff1222..",".002201102220.","..022055022200",".0502022022055",".010105501105.",
+    ".01500510005..",".05111151111..",".01511115511..",".01151111155..","..05555111155.","..01111555555.",
+    ".00011111555..","...0hhhhhh110.","...0hhhhhh110.","...0555555550.","...0111155550.","...0111555550.",
+    "...0115111550.","...0551115550.","...011115550..","...011151550..","....0551550...","....0111550...",
+    ".....0551550..",".....011155500","......00551550","........000000"],
+  thoth:[
+    ".....00000...","....0666660..","...06660660..",".0011666660..",".0111166660..","01100002600..",
+    "010..02620...","01...0660....",".0..06620....","...00662000..","..01a060aa1..",".0j1aa0aa12..",
+    "02jj1aaa1jj..","02jjj111jjj..","0j2jjj2jjj2..","0jj2jjj2222..",".0222jjjj22..",".0jjj22jjj22.",
+    "002jjjj22222.","..022222222..","..0111111550.","..0111111550.","..0222222220.","..0jjjj22220.",
+    "..0jj22jj220.","..022jjj2220.","..0jjjj2220..","..0jj22j220..","...02jj220...","...0jj2220...",
+    "....022j220..","....0jjj22200",".....00222220",".......000000"],
+  horus:[
+    "........00.0..","........030d0.",".......0330d0.","......03300d0.",".....03330dd0.","....033330d0..",
+    "....033330d0..","...033330dd0..","..0d0000ddd0..","..0ddddddd0...","...011dddd0...","...011dddd0...",
+    "...00000000...","..0333331ee0..","..033100i3e0..","..013i00i3ee0.",".0gg13.333ee00",".0gia3i333ee01",
+    ".00333333ee00.",".0e03330ee00..",".0e03330ee0...","00e0kkk0ee00..","04e01110ee044.","0410433011033.",
+    "040034300033..","03433344333...","03343333444...","00444433334...",".0333344444...",".0433333344...",
+    "00044444444...","..011111155...","..011111155...","..0444444440..","..0333444440..","..0334333440..",
+    "..0443334440..","..033334440...","..033443440...","...0433440....","...0334440....","....0443440...",
+    "....043344400.",".....00433440.",".......000000."],
+  anubis:[
+    "....0...0....","...0i0.0i0...","...0i0.0i0...","...0i0.0i0...","...0i000i0...","...0iiiii0...",
+    "..0iiiiii0...",".0iiiiiiii0..",".0i1iiiiii0..","0iiiiiiiii0..","iiiiiiiiii0..","ii1iiiiii0...",
+    "0iiiiiii0....",".0iiiii0.....","..00000......","0101101107b0.",
+    "b00770007b70.","bbbb7bbbb770.","7bbbb7777770.","777bbbbb770..","bbb77777770..","0bbbb77770...",
+    "0111111550...","0111111550...","0777777770...","0bbb777770...","0bb77bb770...","077bbb7770...",
+    "0bbbb7770....","0bb77b770....",".077b770.....",".0bb7770.....","..077b770....","..07bb77700..",
+    "...00777770..",".....00a000..","......egg...."],
+};
+const ORDER=['ptah','ra','thoth','horus','anubis'];
+const LABEL={ptah:'Ptah',ra:'Ra',thoth:'Thoth',horus:'Horus',anubis:'Anubis'};
+const DOMAIN={ptah:'code',ra:'personal',thoth:'classwork',horus:'career',anubis:'intake'};
+
+// ---- build sprite canvases (base + gold silhouette for the shine) ----------
+function hexRGB(h){h=h.replace('#','');return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];}
+const PRGB=PAL.map(hexRGB);
+// 1px pad + silhouette outline (close the outline around the whole figure)
+function withOutline(rows){
+  const w0=Math.max(...rows.map(r=>r.length));
+  const norm=rows.map(r=>r.padEnd(w0,'.'));
+  const pad=['.'.repeat(w0+2),...norm.map(r=>'.'+r+'.'),'.'.repeat(w0+2)];
+  const h=pad.length,w=pad[0].length, g=pad.map(r=>r.split('')), out=g.map(r=>r.slice());
+  const body=(x,y)=>x>=0&&y>=0&&x<w&&y<h&&g[y][x]!=='.'&&g[y][x]!=='0';
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++)
+    if(g[y][x]==='.'&&(body(x-1,y)||body(x+1,y)||body(x,y-1)||body(x,y+1))) out[y][x]='0';
+  return out.map(r=>r.join(''));
+}
+for(const n in GODGRIDS) GODGRIDS[n]=withOutline(GODGRIDS[n]);
+function makeSprite(grid){
+  const h=grid.length, w=grid[0].length;
+  const c=document.createElement('canvas'); c.width=w; c.height=h;
+  const cx=c.getContext('2d'); const img=cx.createImageData(w,h);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    const ch=grid[y][x]; const o=(y*w+x)*4;
+    if(ch==='.'){ img.data[o+3]=0; continue; }
+    const col=PRGB[parseInt(ch,36)]; img.data[o]=col[0]; img.data[o+1]=col[1]; img.data[o+2]=col[2]; img.data[o+3]=255;
+  }
+  cx.putImageData(img,0,0);
+  const g=document.createElement('canvas'); g.width=w; g.height=h; const gx=g.getContext('2d');
+  gx.drawImage(c,0,0); gx.globalCompositeOperation='source-in'; gx.fillStyle='#ffe08a'; gx.fillRect(0,0,w,h);
+  return {w,h,base:c,gold:g};
+}
+const SPR=ORDER.map(n=>makeSprite(GODGRIDS[n]));
+
+// ---- activation state ------------------------------------------------------
+const ACTIVE=ORDER.map(()=>false);
+function anyActive(){ return ACTIVE.some(Boolean); }
+
+// control bar
+const godGrp=document.getElementById('godGrp');
+ORDER.forEach((n,i)=>{ const b=document.createElement('button'); b.textContent=LABEL[n]; b.dataset.i=i;
+  b.onclick=()=>toggle(i); godGrp.appendChild(b); });
+document.getElementById('clearBtn').onclick=()=>{ ACTIVE.fill(false); syncBar(); };
+function toggle(i){ ACTIVE[i]=!ACTIVE[i]; syncBar(); }
+function syncBar(){ [...godGrp.children].forEach((b,i)=>b.classList.toggle('on',ACTIVE[i])); }
+
+// ---- canvas + scene geometry ----------------------------------------------
+const cv=document.getElementById('stage'), ctx=cv.getContext('2d');
+const PW=336, PH=216;
+const HORIZON=100, LH_CX=168;
+const GSCALE=2.0;
+const GODX=[44,106,168,230,292];
+const BASEY=GODX.map(()=>172);
+let buf,bx; function ensureBuf(){ if(!buf){buf=document.createElement('canvas');buf.width=PW;buf.height=PH;bx=buf.getContext('2d');} }
+let W=0,H=0,DPR=1;
+function resize(){ DPR=Math.min(window.devicePixelRatio||1,2); W=cv.clientWidth; H=cv.clientHeight;
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR); }
+window.addEventListener('resize',resize);
+
+function flick(seed,t){ const x=Math.sin(seed*12.9898+t*7.0)*43758.5453; return x-Math.floor(x); }
+function prect(x,y,w,h,c){ bx.fillStyle=c; bx.fillRect(x|0,y|0,w,h); }
+function px(x,y,c){ bx.fillStyle=c; bx.fillRect(x|0,y|0,1,1); }
+
+// ---- sky + stars + lighthouse + water -------------------------------------
+function pxSky(t){
+  const g=bx.createLinearGradient(0,0,0,HORIZON);
+  g.addColorStop(0,'#070d1c'); g.addColorStop(.6,'#0f2747'); g.addColorStop(1,'#1b3f63');
+  bx.fillStyle=g; bx.fillRect(0,0,PW,HORIZON);
+  for(let i=0;i<70;i++){ const sx=(i*61)%PW, sy=(i*37)%(HORIZON-12);
+    if(flick(i,Math.floor(t))>.55) px(sx,sy,'rgba(210,224,255,.85)'); }
+}
+const P={L:'#dccba6',M:'#b6a079',D:'#897450',E:'#5c4b31'};
+function pxLighthouse(t){
+  const cx=LH_CX, baseY=HORIZON;
+  prect(cx-26,baseY-10,52,12,P.M); prect(cx-26,baseY-10,52,2,P.L);
+  pxTier(cx,baseY-44,baseY-10,16); prect(cx-19,baseY-46,38,3,P.D);
+  pxTier(cx,baseY-62,baseY-44,11); prect(cx-13,baseY-64,26,3,P.D);
+  pxTier(cx,baseY-72,baseY-62,6,false);
+  prect(cx-5,baseY-75,10,3,P.D);
+  pxBeacon(cx,baseY-77,t);
+  // beam
+  const bp=0.5+0.5*Math.sin(t*0.6);
+  const grad=bx.createLinearGradient(cx,baseY-77,PW,baseY-95);
+  grad.addColorStop(0,`rgba(255,225,150,${0.20+0.10*bp})`); grad.addColorStop(1,'rgba(255,225,150,0)');
+  bx.save(); bx.beginPath(); bx.moveTo(cx,baseY-79); bx.lineTo(PW,baseY-104); bx.lineTo(PW,baseY-72); bx.closePath();
+  bx.fillStyle=grad; bx.fill(); bx.restore();
+}
+function pxTier(cx,y0,y1,hw,windows=true){
+  for(let y=y0;y<y1;y++){ prect(cx-hw,y,hw*2,1,P.M); prect(cx-hw,y,Math.ceil(hw*0.6),1,P.L); prect(cx+Math.round(hw*0.5),y,Math.ceil(hw*0.5),1,P.D); }
+  prect(cx-hw,y0,1,y1-y0,P.E); prect(cx+hw-1,y0,1,y1-y0,P.E);
+  if(windows){ for(let y=y0+4;y<y1-3;y+=5) for(let x=cx-hw+3;x<cx+hw-2;x+=5) px(x,y,P.E); }
+  else { for(let x=cx-hw+1;x<cx+hw-1;x+=2) prect(x,y0+1,1,y1-y0-2,P.E); }
+}
+function pxBeacon(cx,topY,t){
+  const pulse=0.6+0.4*Math.sin(t*5);
+  for(let ry=-9;ry<8;ry++)for(let rx=-9;rx<9;rx++){ const d=Math.hypot(rx,ry);
+    if(d<9) px(cx+rx,topY+ry,`rgba(255,180,70,${Math.max(0,(1-d/9))*0.5*pulse})`); }
+  const ft=Math.floor(t*16);
+  for(let yy=0;yy<8;yy++){ const lvl=yy/8;
+    const jit=Math.round((flick(yy,ft)-0.5)*2*(1+lvl*2));
+    const ww=Math.max(1,Math.round(3*(1-lvl))+(flick(yy+3,ft)>.6?1:0));
+    const col=lvl<0.3?'#fff3c0':lvl<0.65?'#ffb030':'#e8631a';
+    prect(cx-(ww>>1)+jit,topY-yy,ww,1,col);
+  }
+}
+function pxWater(t){
+  prect(PW-72,HORIZON-4,72,8,'#0c2342');
+  for(let i=PW-72;i<PW;i+=2){ if(flick(i,Math.floor(t*3))>.6) px(i,HORIZON-3+(i%4),'#1d4a73'); }
+}
+
+// ---- the plaza floor — big perspective stone pavers (ref #9) ----------------
+// Rows of bricks recede to a vanishing point at the lighthouse foot. Each row is
+// taller and its bricks wider toward the viewer; bricks are offset (running bond),
+// shaded per-brick with a lit top edge + dark seam, moody blue-grey stone.
+function pxFloor(t){
+  const VX=LH_CX, VY=HORIZON-6;          // vanishing point
+  // base wash (dark at the back, a touch warmer up front)
+  const g=bx.createLinearGradient(0,HORIZON,0,PH);
+  g.addColorStop(0,'#1b2330'); g.addColorStop(1,'#39414f');
+  bx.fillStyle=g; bx.fillRect(0,HORIZON,PW,PH-HORIZON);
+  // row boundaries: depth lines whose spacing grows toward the viewer
+  const rowY=[]; let y=HORIZON+2, gap=2.4;
+  while(y<PH+6){ rowY.push(y); y+=gap; gap*=1.34; }
+  for(let r=0;r<rowY.length-1;r++){
+    const y0=Math.round(rowY[r]), y1=Math.round(rowY[r+1]); if(y1<=y0) continue;
+    const depth=(y0-HORIZON)/(PH-HORIZON);                 // 0 back .. 1 front
+    const lit=`rgb(${52+depth*26|0},${60+depth*30|0},${74+depth*34|0})`;
+    const mid=`rgb(${38+depth*20|0},${46+depth*24|0},${58+depth*28|0})`;
+    const seam='rgba(12,16,23,.85)';
+    // brick width grows with depth; offset every other row (running bond)
+    const bw=4+depth*30, off=(r%2)?bw/2:0;
+    prect(0,y0,PW,y1-y0,mid);
+    prect(0,y0,PW,1,lit);                                  // lit top edge of the row
+    prect(0,y1-1,PW,1,seam);                               // seam under the row
+    for(let bx0=-off; bx0<PW; bx0+=bw){                    // vertical seams, perspective-skewed toward VX
+      const xa=bx0, xTop=VX+(bx0-VX)*((y0-VY)/(y1-VY));
+      bx.save(); bx.strokeStyle=seam; bx.lineWidth=1;
+      bx.beginPath(); bx.moveTo(Math.round(xTop),y0); bx.lineTo(Math.round(xa),y1); bx.stroke(); bx.restore();
+    }
+  }
+}
+
+// ---- platform + ripple under a god -----------------------------------------
+function drawPlatform(cx,baseY,active,t,i){
+  const rx=GSCALE*9, ry=rx*0.34;
+  bx.save(); bx.globalCompositeOperation='lighter';
+  if(active){
+    const core=bx.createRadialGradient(cx,baseY-1,1,cx,baseY-1,rx*1.5);
+    core.addColorStop(0,'rgba(255,214,96,.55)'); core.addColorStop(1,'rgba(255,180,40,0)');
+    bx.fillStyle=core; bx.beginPath(); bx.ellipse(cx,baseY-1,rx*1.5,ry*1.5,0,0,Math.PI*2); bx.fill();
+    for(let k=0;k<3;k++){ const ph=((t*0.5)+k/3)%1; const er=rx*(0.5+ph*1.7);
+      bx.beginPath(); bx.ellipse(cx,baseY-1,er,er*0.34,0,0,Math.PI*2);
+      bx.strokeStyle=`rgba(255,206,80,${(1-ph)*0.8})`; bx.lineWidth=1.4; bx.stroke(); }
+  } else {
+    bx.beginPath(); bx.ellipse(cx,baseY-1,rx,ry,0,0,Math.PI*2);
+    bx.fillStyle='rgba(120,140,170,.14)'; bx.fill();
+  }
+  bx.restore();
+}
+
+// ---- a single god ----------------------------------------------------------
+const HIT=ORDER.map(()=>null);
+function drawGod(i,t){
+  const sp=SPR[i], cx=GODX[i], baseY=BASEY[i], active=ACTIVE[i], any=anyActive();
+  const dw=sp.w*GSCALE, dh=sp.h*GSCALE;
+  const hover = active ? (-8 + Math.sin(t*2.2+i*1.3)*2.4) : Math.sin(t*1.3+i*1.7)*1.1;
+  const dx=Math.round(cx-dw/2), dy=Math.round(baseY-dh+hover);
+  drawPlatform(cx,baseY,active,t,i);
+  if(active){            // golden aura behind
+    const gx=cx, gy=dy+dh*0.42, pulse=0.6+0.4*Math.sin(t*3+i), R=dh*0.72;
+    const grad=bx.createRadialGradient(gx,gy,2,gx,gy,R);
+    grad.addColorStop(0,`rgba(255,216,96,${0.50*pulse})`);
+    grad.addColorStop(.45,`rgba(255,184,52,${0.22*pulse})`);
+    grad.addColorStop(1,'rgba(255,170,40,0)');
+    bx.save(); bx.globalCompositeOperation='lighter'; bx.fillStyle=grad; bx.fillRect(gx-R,gy-R,R*2,R*2); bx.restore();
+  }
+  bx.imageSmoothingEnabled=false;
+  if(any && !active) bx.filter='brightness(.48) saturate(.6)';
+  bx.drawImage(sp.base,dx,dy,dw,dh);
+  bx.filter='none';
+  if(active){           // golden sheen over the sprite
+    const pulse=0.5+0.5*Math.sin(t*4+i);
+    bx.save(); bx.globalCompositeOperation='lighter'; bx.globalAlpha=0.16+0.16*pulse;
+    bx.drawImage(sp.gold,dx,dy,dw,dh); bx.restore(); bx.globalAlpha=1;
+  }
+  HIT[i]={x:dx,y:dy,w:dw,h:dh};
+}
+
+// ---- labels (crisp, drawn on the real ctx after scale) ---------------------
+function labels(t){
+  const kx=W/PW, ky=H/PH; ctx.textAlign='center';
+  ORDER.forEach((n,i)=>{
+    const x=GODX[i]*kx, y=(BASEY[i]+12)*ky, active=ACTIVE[i], any=anyActive();
+    ctx.font='600 12px ui-monospace,monospace';
+    ctx.fillStyle = active ? 'rgba(255,210,90,1)' : (any?'rgba(150,158,172,.55)':'rgba(220,210,180,.92)');
+    if(active){ ctx.shadowColor='rgba(255,200,70,.9)'; ctx.shadowBlur=10; } else ctx.shadowBlur=0;
+    ctx.fillText(LABEL[n],x,y); ctx.shadowBlur=0;
+    ctx.font='10px ui-monospace,monospace'; ctx.fillStyle = active?'rgba(255,190,70,.8)':'rgba(184,134,43,.6)';
+    ctx.fillText(DOMAIN[n],x,y+12);
+  });
+}
+
+// ---- frame -----------------------------------------------------------------
+function draw(t){
+  ensureBuf(); bx.imageSmoothingEnabled=false; bx.filter='none'; bx.globalCompositeOperation='source-over';
+  bx.clearRect(0,0,PW,PH);
+  pxSky(t); pxWater(t); pxLighthouse(t); pxFloor(t);
+  ORDER.forEach((_,i)=>drawGod(i,t));
+  ctx.save(); ctx.scale(DPR,DPR); ctx.clearRect(0,0,W,H);
+  ctx.imageSmoothingEnabled=false; ctx.drawImage(buf,0,0,W,H);
+  labels(t); ctx.restore();
+}
+
+// ---- click-to-activate on the canvas ---------------------------------------
+cv.addEventListener('click',e=>{
+  const r=cv.getBoundingClientRect(); const sx=(e.clientX-r.left)*(PW/r.width), sy=(e.clientY-r.top)*(PH/r.height);
+  for(let i=0;i<HIT.length;i++){ const h=HIT[i]; if(!h) continue;
+    if(sx>=h.x-3 && sx<=h.x+h.w+3 && sy>=h.y-3 && sy<=h.y+h.h+3){ toggle(i); return; } }
+});
+
+function frame(now){ draw(now/1000); requestAnimationFrame(frame); }
+resize(); syncBar(); requestAnimationFrame(frame);
+</script>
+</body>
+</html>

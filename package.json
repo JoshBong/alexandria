@@ -1,0 +1,34 @@
+{
+  "name": "alexandria",
+  "version": "0.4.0",
+  "description": "Personal AI orchestration layer on Claude Code. Pharos routes prompts to warm per-domain Keepers over a memory substrate.",
+  "type": "module",
+  "license": "MIT",
+  "author": "JoshBong",
+  "bin": {
+    "alexandria": "bin/pharos.js",
+    "pharos": "bin/pharos.js",
+    "alexandria-events": "bin/events.js",
+    "alexandria-loop": "bin/loop.js",
+    "alexandria-research": "bin/research.js",
+    "alexandria-update": "bin/update.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js test/providers/*.test.js",
+    "alexandria": "node bin/pharos.js",
+    "pharos": "node bin/pharos.js",
+    "events": "node bin/events.js",
+    "loop": "node bin/loop.js",
+    "router-proof": "node test/router-proof.js",
+    "route-log": "node test/route-log.js",
+    "phase1-sim": "node test/phase1-sim.js"
+  }
+}

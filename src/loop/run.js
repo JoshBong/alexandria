@@ -1,0 +1,203 @@
+// The loop driver — runs a SEQUENCE of Pharos turns toward a goal, replanning as the
+// human injects ideas, until the done-condition holds or a guard trips.
+//
+// Pharos already runs ONE turn against a warm Keeper (handle()); this runs a loop of
+// them. It is a thin orchestrator: it does not re-implement session management,
+// compaction, or memory — it calls handle() per step (via the step runner) and reads
+// the signals handle() already returns. See docs/auto-loop.md §2, §7.
+//
+// The boundary is the only checkpoint. Mid-step is sacred — inputs buffer and are
+// drained only after a step finishes, in order: freshness reseed → drain + elaborate +
+// replan the unlocked tail → next ready step. A quiet boundary just advances.
+//
+// Everything that would spawn `claude` is injected (handle / plan / replan / elaborate
+// / verify / reseed), so the whole control flow is provable offline (P0). Live wiring
+// is P1–P4.
+
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { loopPaths } from './paths.js';
+import { loadPlan, savePlan, freshPlan, lockStep } from './plan-store.js';
+import { drainInbox } from './inbox.js';
+import { plan as planFn, replan as replanFn } from './plan.js';
+import { makeElaborator } from './elaborate.js';
+import { runStep } from './step.js';
+import { detectDrift } from './drift.js';
+import { reviewStep } from './review.js';
+import { selfWrite } from './selfwrite.js';
+import {
+  nextReady,
+  doneConditionHolds,
+  allRemainingBlocked,
+  noPendingSteps,
+  guardsTrip,
+  isStop,
+} from './guards.js';
+import { isTokenLow } from '../pharos/tokens.js';
+
+// One durable line per step/boundary, to the loop's own log.jsonl (reuses logEvent's
+// shape). Best-effort + gated on persist, like pharos/events.js. A live observer
+// (opts.onEvent — the CLI's progress printer) sees every event regardless of persist.
+function logLoop(event, ctx) {
+  if (ctx.onEvent) {
+    try { ctx.onEvent(event); } catch { /* an observer must never break the loop */ }
+  }
+  if (!ctx.persist) return;
+  try {
+    const file = ctx.paths.log;
+    mkdirSync(dirname(file), { recursive: true });
+    appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), loopId: ctx.loopId, ...event }) + '\n');
+  } catch {
+    /* instrumentation must never break the loop */
+  }
+}
+
+// Freshness at the boundary: the canary/token signals handle() already surfaced this
+// step. Low freshness → reseed before the next step. The canary becomes a
+// machine-checked second-line drift trigger here (autonomous loops kill the human
+// eyeball, so drift must be caught at the boundary, not left to ride to auto-compact).
+function freshnessLow(signals = {}) {
+  return signals.degraded || signals.compacting || isTokenLow(signals.contextTokens || 0);
+}
+
+// runLoop(goal, opts) → { status, plan, reason, iterations }
+//   status: 'success' | 'stuck'
+// Injectable seams (all default to the real modules; tests/sims pass mocks):
+//   opts.handle, opts.verify   → step runner
+//   opts.plan, opts.replan     → planner (default the deterministic P0 planners)
+//   opts.elaborate / opts.ask  → input elaborator
+//   opts.reseed                → freshness reseed (P2 wires handoff.js; P0 no-op)
+//   opts.guards                → guard limits
+//   opts.dir / opts.loopId     → loop state location
+//   opts.persist               → write plan/log to disk (default true)
+export async function runLoop(goal, opts = {}) {
+  const loopId = opts.loopId || 'default';
+  const paths = loopPaths(loopId, opts);
+  const persist = opts.persist ?? true;
+  const ctx = { loopId, paths, persist, onEvent: opts.onEvent };
+
+  const elaborate = opts.elaborate || makeElaborator({ ask: opts.ask });
+  const doPlan = opts.plan || planFn;
+  const doReplan = opts.replan || replanFn;
+  const reseed = opts.reseed || (() => {}); // P0: no-op; P2 reuses handoff.js
+
+  // Load an existing plan (resume) or build a fresh one and run the first planning pass.
+  let plan = (persist && loadPlan(loopId, opts)) || freshPlan(loopId, goal, opts);
+  if (plan.steps.length === 0) {
+    await doPlan(plan, opts);
+    if (persist) savePlan(plan, opts);
+    logLoop({ event: 'plan', steps: plan.steps.length, done: plan.done }, ctx);
+  }
+
+  const state = { iterations: 0, boundariesSinceProgress: 0 };
+
+  while (true) {
+    state.iterations += 1;
+
+    const step = nextReady(plan);
+
+    // Nothing ready → are we done, or dead-ended?
+    if (!step) {
+      if (doneConditionHolds(plan, opts)) return exit('success', 'done-condition holds', plan, state, ctx);
+      if (allRemainingBlocked(plan)) return exit('stuck', 'all remaining steps blocked', plan, state, ctx);
+      // Nothing pending and not done → the remaining steps are PARKED. Surface that now
+      // with a clear count, rather than spinning empty boundaries until the watchdog trips
+      // (which would mislabel a finished-with-parks run as a generic no-progress stall).
+      if (noPendingSteps(plan)) {
+        const parked = plan.steps.filter((s) => s.status === 'parked').length;
+        return exit('stuck', `${parked} step${parked === 1 ? '' : 's'} parked`, plan, state, ctx);
+      }
+      // No ready step, not done, not blocked, but something is still pending (its dep is
+      // in-flight elsewhere is impossible here, so this is the only-inbox-can-unblock case):
+      // fall through to the boundary so a buffered input can replan; the watchdog backstops.
+    }
+
+    let signals = {};
+    if (step) {
+      step.attempts = (step.attempts || 0) + 0; // touched at the boundary mark
+      plan.cursor = plan.steps.indexOf(step);
+      const outcome = await runStep(step, opts);
+      // Mark + lock at the boundary (the only place the plan mutates for a step).
+      step.attempts = outcome.attempts;
+      if (outcome.status === 'done') {
+        // A done step does not self-ratify (g4): an independent reviewer gates the lock.
+        // No reviewer wired → approves (P0 no-op). Reject → park, surfacing the notes,
+        // rather than rework-on-reject (a bounded later behavior, noted in docs).
+        const verdict = await reviewStep(step, outcome.result, opts);
+        logLoop({ event: 'review', id: step.id, reviewer: verdict.reviewer, approved: verdict.approved }, ctx);
+        if (verdict.approved) {
+          lockStep(plan, step.id); // done + reviewed → locked prefix grows
+        } else {
+          step.status = 'parked';
+          step.reviewReason = verdict.notes || 'independent review rejected';
+        }
+      } else {
+        step.status = 'parked'; // parked counts as progress (a hard step, not a spin)
+      }
+      signals = outcome.signals || {};
+      state.boundariesSinceProgress = 0; // a step reached a terminal outcome → progress
+      if (persist) savePlan(plan, opts);
+      logLoop({ event: 'step', id: step.id, status: step.status, attempts: step.attempts }, ctx);
+
+      // Goal-drift check (complements the canary's quality-drift). Pure over what the
+      // boundary already knows; criticals are surfaced, all are logged. Most signals are
+      // P0-absent (no clock/cost yet) so only scope-creep / high-risk / repeated-failure
+      // can fire until P2 threads elapsed+cost.
+      const drift = detectDrift({
+        plan,
+        touched: (outcome.result && outcome.result.touched) || [],
+        failCount: plan.steps.filter((s) => s.status === 'parked').length,
+        riskPaths: opts.riskPaths,
+      }, opts);
+      if (drift.length) logLoop({ event: 'drift', alerts: drift }, ctx);
+
+      // Self-writing review (g5): a forked reflection authors/patches reusable skills
+      // from what just happened — through the skills store ONLY, never the live plan.
+      // Distinct seam from the planner's opts.ask; no fork wired → no-op. Live forking
+      // off a warm Keeper depends on P2.
+      if (opts.selfwrite) {
+        const snapshot = { goal: plan.goal, lastStep: { id: step.id, intent: step.intent, status: step.status } };
+        const sw = await selfWrite(snapshot, { ask: opts.selfwrite, skills: opts.skills });
+        if (sw.ran) logLoop({ event: 'selfwrite', applied: sw.applied, skipped: sw.skipped }, ctx);
+      }
+    } else {
+      // A boundary with no step ran is a non-progress boundary — the watchdog ticks.
+      state.boundariesSinceProgress += 1;
+    }
+
+    // ---- BOUNDARY ----
+    // 1. freshness → reseed if drifting (clean context first, then replan into it)
+    if (freshnessLow(signals)) {
+      await reseed({ plan, signals, loopId });
+      logLoop({ event: 'reseed', signals }, ctx);
+    }
+
+    // 2. drain the buffer (batched) → STOP check → elaborate → replan the unlocked tail
+    const { drained, cursor } = drainInbox(plan.inboxDrained || 0, opts);
+    if (drained.some(isStop)) {
+      logLoop({ event: 'stop', via: 'inbox' }, ctx);
+      return exit('stuck', 'human STOP', plan, state, ctx);
+    }
+    if (drained.length) {
+      const elaborated = [];
+      for (const input of drained) elaborated.push(await elaborate(input, { goal: plan.goal }));
+      await doReplan(plan, elaborated, opts);
+      plan.inboxDrained = cursor;
+      if (persist) savePlan(plan, opts);
+      logLoop({ event: 'replan', folded: drained.length, steps: plan.steps.length }, ctx);
+    } else {
+      plan.inboxDrained = cursor; // keep the cursor current even on a quiet boundary
+    }
+
+    // 3. guards (the watchdog is the real infinite-loop kill)
+    const g = guardsTrip(plan, state, opts);
+    if (g.tripped) return exit('stuck', g.reason, plan, state, ctx);
+
+    if (persist) savePlan(plan, opts);
+  }
+}
+
+function exit(status, reason, plan, state, ctx) {
+  logLoop({ event: 'exit', status, reason, iterations: state.iterations }, ctx);
+  return { status, reason, plan, iterations: state.iterations };
+}
